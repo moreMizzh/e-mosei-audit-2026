@@ -34,6 +34,11 @@ _COVERAGE_COLUMNS = (
     "vision_shape",
     "failure_reason",
 )
+_SUCCESS_SHAPES = {
+    "text_shape": str(_FEATURE_SHAPES["text"]),
+    "audio_shape": str(_FEATURE_SHAPES["audio"]),
+    "vision_shape": str(_FEATURE_SHAPES["vision"]),
+}
 _FileFingerprint = tuple[int, int, int, int, bytes]
 
 
@@ -54,17 +59,28 @@ class SampleFeatures:
         _reject_duplicate_sample_id(target, self.sample_id)
 
         target.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            target,
-            sample_id=np.asarray(self.sample_id),
-            text=arrays["text"],
-            audio=arrays["audio"],
-            vision=arrays["vision"],
-            slots=arrays["slots"],
-            text_mask=arrays["text_mask"],
-            audio_mask=arrays["audio_mask"],
-            vision_mask=arrays["vision_mask"],
-        )
+        staged: Path | None = None
+        try:
+            staged = _new_temp_path(target, suffix=".npz")
+            with staged.open("wb") as feature_file:
+                np.savez_compressed(
+                    feature_file,
+                    sample_id=np.asarray(self.sample_id),
+                    text=arrays["text"],
+                    audio=arrays["audio"],
+                    vision=arrays["vision"],
+                    slots=arrays["slots"],
+                    text_mask=arrays["text_mask"],
+                    audio_mask=arrays["audio_mask"],
+                    vision_mask=arrays["vision_mask"],
+                )
+                feature_file.flush()
+                os.fsync(feature_file.fileno())
+            os.replace(staged, target)
+            staged = None
+        finally:
+            if staged is not None:
+                staged.unlink(missing_ok=True)
 
 
 def write_coverage(
@@ -215,6 +231,7 @@ def _validate_coverage_rows(
                 raise ValueError("success row requires feature_path")
             if not _is_nonempty_path(row["evidence_path"]):
                 raise ValueError("success row requires evidence_path")
+            _validate_success_artifacts(row)
             success_count += 1
         elif not _is_nonempty_text(row["failure_reason"]):
             raise ValueError("failed row requires failure_reason")
@@ -238,6 +255,27 @@ def _is_nonempty_path(value: object) -> bool:
 
 def _is_nonempty_text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _validate_success_artifacts(row: Mapping[str, object]) -> None:
+    for field in ("video_id", "clip_id", "member_path"):
+        if not _is_nonempty_text(row[field]):
+            raise ValueError(f"success row requires {field}")
+    if not _is_finite_positive_number(row["duration_seconds"]):
+        raise ValueError("success row requires positive duration_seconds")
+    for field, expected in _SUCCESS_SHAPES.items():
+        if row[field] != expected:
+            raise ValueError(f"success row requires {field} {expected}")
+
+
+def _is_finite_positive_number(value: object) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return False
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return bool(np.isfinite(numeric) and numeric > 0)
 
 
 def _write_coverage_outputs(
@@ -284,9 +322,9 @@ def _write_coverage_outputs(
                 temporary_path.unlink(missing_ok=True)
 
 
-def _new_temp_path(destination: Path) -> Path:
+def _new_temp_path(destination: Path, *, suffix: str = ".tmp") -> Path:
     descriptor, name = tempfile.mkstemp(
-        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+        prefix=f".{destination.name}.", suffix=suffix, dir=destination.parent
     )
     os.close(descriptor)
     return Path(name)

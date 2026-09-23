@@ -210,6 +210,29 @@ def test_sample_features_write_rejects_non_npz_target_and_duplicate_sample_id(
     assert not (tmp_path / "second.npz").exists()
 
 
+def test_sample_features_write_cleans_staged_partial_npz(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contracts = _contracts()
+    target = tmp_path / "features" / "sample-001.npz"
+
+    def write_partial(destination: object, **_: object) -> None:
+        if hasattr(destination, "write"):
+            destination.write(b"partial npz")
+            destination.flush()
+        else:
+            Path(destination).write_bytes(b"partial npz")
+        raise OSError("simulated NPZ serializer failure")
+
+    monkeypatch.setattr(contracts.np, "savez_compressed", write_partial)
+
+    with pytest.raises(OSError, match="simulated NPZ serializer failure"):
+        _valid_sample().write(target)
+
+    assert not target.exists()
+    assert not list(target.parent.glob(".sample-001.npz.*.npz"))
+
+
 @pytest.mark.parametrize(
     ("rows", "expected_count"),
     [
@@ -244,6 +267,58 @@ def test_write_coverage_rejects_duplicate_or_malformed_rows(
 
     assert not output.exists()
     assert not (tmp_path / "q1_summary.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("video_id", ""),
+        ("clip_id", "  "),
+        ("member_path", ""),
+        ("duration_seconds", np.nan),
+        ("duration_seconds", 0.0),
+        ("duration_seconds", "not-a-number"),
+        ("text_shape", "(50, 767)"),
+        ("text_shape", ""),
+        ("audio_shape", "(50, 49)"),
+        ("audio_shape", ""),
+        ("vision_shape", "(50, 55)"),
+        ("vision_shape", ""),
+    ],
+)
+def test_write_coverage_rejects_malformed_success_artifacts(
+    tmp_path: Path, field: str, invalid: object
+) -> None:
+    contracts = _contracts()
+    output = tmp_path / "q1_samples.csv"
+    row = {**_coverage_row("one"), field: invalid}
+
+    with pytest.raises(ValueError, match=field):
+        contracts.write_coverage(output, [row], expected_count=1)
+
+    assert not output.exists()
+    assert not (tmp_path / "q1_summary.json").exists()
+
+
+def test_write_coverage_allows_failed_row_without_success_artifacts(
+    tmp_path: Path,
+) -> None:
+    contracts = _contracts()
+    output = tmp_path / "q1_samples.csv"
+    row = {
+        **_coverage_row("failed", status="failed"),
+        "video_id": "",
+        "clip_id": "",
+        "member_path": "",
+        "duration_seconds": 0.0,
+        "text_shape": "",
+        "audio_shape": "",
+        "vision_shape": "",
+    }
+
+    counts = contracts.write_coverage(output, [row], expected_count=1)
+
+    assert counts == {"coverage_count": 1, "success_count": 0, "failed_count": 1}
 
 
 def test_write_coverage_writes_success_and_failure_rows_with_summary(
