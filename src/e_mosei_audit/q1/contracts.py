@@ -268,12 +268,12 @@ def _write_coverage_outputs(
 
         if _path_exists(output) or _path_exists(summary):
             raise ValueError("coverage output or summary already exists")
+        csv_fingerprint = _file_fingerprint(csv_temp)
         os.replace(csv_temp, output)
         csv_temp = None
-        csv_fingerprint = _file_fingerprint(output)
+        summary_fingerprint = _file_fingerprint(summary_temp)
         os.replace(summary_temp, summary)
         summary_temp = None
-        summary_fingerprint = _file_fingerprint(summary)
     except Exception:
         _unlink_if_unchanged(summary, summary_fingerprint)
         _unlink_if_unchanged(output, csv_fingerprint)
