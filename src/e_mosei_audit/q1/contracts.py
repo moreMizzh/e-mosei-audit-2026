@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import tempfile
@@ -33,6 +34,7 @@ _COVERAGE_COLUMNS = (
     "vision_shape",
     "failure_reason",
 )
+_FileFingerprint = tuple[int, int, int, int, bytes]
 
 
 @dataclass(frozen=True)
@@ -246,8 +248,8 @@ def _write_coverage_outputs(
 ) -> None:
     csv_temp: Path | None = None
     summary_temp: Path | None = None
-    csv_published = False
-    summary_published = False
+    csv_fingerprint: _FileFingerprint | None = None
+    summary_fingerprint: _FileFingerprint | None = None
     try:
         csv_temp = _new_temp_path(output)
         with csv_temp.open("w", encoding="utf-8", newline="") as coverage_file:
@@ -268,15 +270,13 @@ def _write_coverage_outputs(
             raise ValueError("coverage output or summary already exists")
         os.replace(csv_temp, output)
         csv_temp = None
-        csv_published = True
+        csv_fingerprint = _file_fingerprint(output)
         os.replace(summary_temp, summary)
         summary_temp = None
-        summary_published = True
+        summary_fingerprint = _file_fingerprint(summary)
     except Exception:
-        if summary_published:
-            summary.unlink(missing_ok=True)
-        if csv_published:
-            output.unlink(missing_ok=True)
+        _unlink_if_unchanged(summary, summary_fingerprint)
+        _unlink_if_unchanged(output, csv_fingerprint)
         raise
     finally:
         for temporary_path in (csv_temp, summary_temp):
@@ -294,3 +294,22 @@ def _new_temp_path(destination: Path) -> Path:
 
 def _path_exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
+
+
+def _file_fingerprint(path: Path) -> _FileFingerprint | None:
+    try:
+        before = path.stat()
+        with path.open("rb") as content:
+            digest = hashlib.file_digest(content, "sha256").digest()
+        after = path.stat()
+    except OSError:
+        return None
+    identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        return None
+    return (*identity, digest)
+
+
+def _unlink_if_unchanged(path: Path, fingerprint: _FileFingerprint | None) -> None:
+    if fingerprint is not None and _file_fingerprint(path) == fingerprint:
+        path.unlink(missing_ok=True)
