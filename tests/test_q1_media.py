@@ -25,6 +25,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 args = sys.argv[1:]
 with Path(os.environ["FAKE_FFMPEG_LOG"]).open("a", encoding="utf-8") as log_file:
@@ -52,6 +53,8 @@ if mode == "missing-frames-stderr" and not is_audio:
 if mode == "zero-byte-frames" and not is_audio:
     output.with_name("frame_000001.png").write_bytes(b"")
     raise SystemExit(0)
+if mode == "sleep-audio" and is_audio:
+    time.sleep(float(os.environ["FAKE_FFMPEG_SLEEP_SECONDS"]))
 
 if is_audio:
     output.write_bytes(b"RIFF fake wav")
@@ -182,6 +185,46 @@ def test_decode_member_includes_successful_ffmpeg_stderr_when_output_is_missing(
     with pytest.raises(media.MediaError, match=diagnostic):
         with media.decode_member(ffmpeg, b"fake mp4", work_root):
             pytest.fail("the caller body must not run without required output")
+
+    assert list(work_root.iterdir()) == []
+
+
+def test_decode_member_times_out_audio_decode_and_cleans_temporary_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media = _media()
+    ffmpeg, _ = _fake_ffmpeg(tmp_path, monkeypatch, mode="sleep-audio")
+    monkeypatch.setenv("FAKE_FFMPEG_SLEEP_SECONDS", "1")
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+
+    with pytest.raises(
+        media.MediaError, match=r"audio decoding timed out after 0\.01 seconds"
+    ):
+        with media.decode_member(
+            ffmpeg, b"fake mp4", work_root, timeout_seconds=0.01
+        ):
+            pytest.fail("the caller body must not run when decoding times out")
+
+    assert list(work_root.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "timeout_seconds", [0.0, -1.0, float("nan"), float("inf"), True, "one"]
+)
+def test_decode_member_rejects_nonpositive_or_nonfinite_timeout_before_temporary_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeout_seconds: object
+) -> None:
+    media = _media()
+    ffmpeg, _ = _fake_ffmpeg(tmp_path, monkeypatch)
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+
+    with pytest.raises(media.MediaError, match="timeout_seconds"):
+        with media.decode_member(
+            ffmpeg, b"fake mp4", work_root, timeout_seconds=timeout_seconds
+        ):
+            pytest.fail("the caller body must not run with an invalid timeout")
 
     assert list(work_root.iterdir()) == []
 

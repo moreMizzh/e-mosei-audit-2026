@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 from collections.abc import Iterator
@@ -23,13 +24,18 @@ class DecodedMedia:
 
 @contextmanager
 def decode_member(
-    ffmpeg: Path, mp4_bytes: bytes, work_root: Path
+    ffmpeg: Path,
+    mp4_bytes: bytes,
+    work_root: Path,
+    *,
+    timeout_seconds: float = 60.0,
 ) -> Iterator[DecodedMedia]:
     """Decode audio and ten-fps frames into a temporary workspace."""
 
     _validate_work_root(work_root)
     _validate_ffmpeg(ffmpeg)
     payload = _validate_mp4_bytes(mp4_bytes)
+    timeout_seconds = _validate_timeout_seconds(timeout_seconds)
 
     with TemporaryDirectory(dir=work_root) as temporary_directory:
         temporary_root = Path(temporary_directory)
@@ -54,6 +60,7 @@ def decode_member(
                 str(wav_path),
             ],
             stage="audio",
+            timeout_seconds=timeout_seconds,
         )
         if not _is_nonempty_regular_file(wav_path):
             raise _missing_output_error("audio output is missing or empty", audio_stderr)
@@ -74,6 +81,7 @@ def decode_member(
                 str(frame_dir / "frame_%06d.png"),
             ],
             stage="frame",
+            timeout_seconds=timeout_seconds,
         )
         if not _has_nonempty_png(frame_dir):
             raise _missing_output_error(
@@ -106,7 +114,18 @@ def _validate_mp4_bytes(value: object) -> bytes:
     return payload
 
 
-def _run_ffmpeg(ffmpeg: Path, arguments: list[str], *, stage: str) -> str:
+def _validate_timeout_seconds(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise MediaError("timeout_seconds must be a finite positive number")
+    timeout_seconds = float(value)
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise MediaError("timeout_seconds must be a finite positive number")
+    return timeout_seconds
+
+
+def _run_ffmpeg(
+    ffmpeg: Path, arguments: list[str], *, stage: str, timeout_seconds: float
+) -> str:
     try:
         completed = subprocess.run(
             [str(ffmpeg), *arguments],
@@ -114,7 +133,12 @@ def _run_ffmpeg(ffmpeg: Path, arguments: list[str], *, stage: str) -> str:
             capture_output=True,
             text=True,
             shell=False,
+            timeout=timeout_seconds,
         )
+    except subprocess.TimeoutExpired as error:
+        raise MediaError(
+            f"{stage} decoding timed out after {timeout_seconds:g} seconds"
+        ) from error
     except OSError as error:
         raise MediaError(f"{stage} ffmpeg invocation failed: {error}") from error
 
