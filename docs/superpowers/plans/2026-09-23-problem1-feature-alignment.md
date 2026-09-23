@@ -508,7 +508,7 @@ def build_opensmile_extractor() -> AudioExtractor: ...
 def build_mediapipe_extractor(model_cache: Path) -> VisionExtractor: ...
 ```
 
-Each constructor imports its third-party package inside the function and raises `RuntimeError` naming the missing package or model asset. The BERT adapter must return 768 dimensions. The OpenSMILE adapter must request `LowLevelDescriptors`, return 25-dimensional windows with timestamps, and leave 50-dimensional mean/std pooling to the runner. The MediaPipe adapter must pad/truncate blendshape scores to 52 and append face area, face-centre x/y, and detection score to exactly 56 dimensions. Empty valid detector output is represented by an empty `(0, 56)` frame array and not a zero-filled frame.
+Each constructor imports its third-party package inside the function and raises `RuntimeError` naming the missing package or model asset. The BERT adapter must return 768 dimensions. The OpenSMILE adapter must request `LowLevelDescriptors`, return 25-dimensional windows with timestamps, and leave 50-dimensional mean/std pooling to the runner. The MediaPipe adapter must pad/truncate blendshape scores to 52 and append face area, face-centre x/y, and a face-presence value of `1.0` for every emitted face to exactly 56 dimensions. Face Landmarker does not expose a detector-confidence score. Empty valid detector output is represented by an empty `(0, 56)` frame array and not a zero-filled frame.
 
 - [ ] **Step 5: Run extractor tests to verify they pass.**
 

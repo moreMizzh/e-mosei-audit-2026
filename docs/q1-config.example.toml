@@ -1,0 +1,8 @@
+# Copy this file to the repository root as q1.toml before running the CLI.
+[paths]
+audit_dir = "artifacts/data-audit-v2"
+archive = "E题数据 (2).zip"
+seven_zip = ".tools/bin/7za"
+ffmpeg = ".tools/bin/ffmpeg"
+model_cache = ".tools/models"
+output_dir = "artifacts/q1-default"
