@@ -37,7 +37,7 @@ def decode_member(
         input_path.write_bytes(payload)
 
         wav_path = temporary_root / "audio.wav"
-        _run_ffmpeg(
+        audio_stderr = _run_ffmpeg(
             ffmpeg,
             [
                 "-hide_banner",
@@ -56,11 +56,11 @@ def decode_member(
             stage="audio",
         )
         if not _is_nonempty_regular_file(wav_path):
-            raise MediaError("audio output is missing or empty after ffmpeg succeeded")
+            raise _missing_output_error("audio output is missing or empty", audio_stderr)
 
         frame_dir = temporary_root / "frames"
         frame_dir.mkdir()
-        _run_ffmpeg(
+        frame_stderr = _run_ffmpeg(
             ffmpeg,
             [
                 "-hide_banner",
@@ -75,8 +75,10 @@ def decode_member(
             ],
             stage="frame",
         )
-        if not _has_png(frame_dir):
-            raise MediaError("frame output contains no PNG files after ffmpeg succeeded")
+        if not _has_nonempty_png(frame_dir):
+            raise _missing_output_error(
+                "frame output contains no nonempty PNG files", frame_stderr
+            )
 
         yield DecodedMedia(wav_path=wav_path, frame_dir=frame_dir)
 
@@ -104,7 +106,7 @@ def _validate_mp4_bytes(value: object) -> bytes:
     return payload
 
 
-def _run_ffmpeg(ffmpeg: Path, arguments: list[str], *, stage: str) -> None:
+def _run_ffmpeg(ffmpeg: Path, arguments: list[str], *, stage: str) -> str:
     try:
         completed = subprocess.run(
             [str(ffmpeg), *arguments],
@@ -116,11 +118,20 @@ def _run_ffmpeg(ffmpeg: Path, arguments: list[str], *, stage: str) -> None:
     except OSError as error:
         raise MediaError(f"{stage} ffmpeg invocation failed: {error}") from error
 
+    stderr = completed.stderr or ""
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or (
+        detail = stderr.strip() or (
             f"ffmpeg exited with status {completed.returncode} without stderr"
         )
         raise MediaError(f"{stage} decode failed: {detail}")
+    return stderr
+
+
+def _missing_output_error(message: str, stderr: str) -> MediaError:
+    detail = stderr.strip()
+    if detail:
+        return MediaError(f"{message} after ffmpeg succeeded: {detail}")
+    return MediaError(f"{message} after ffmpeg succeeded")
 
 
 def _is_nonempty_regular_file(path: Path) -> bool:
@@ -130,8 +141,10 @@ def _is_nonempty_regular_file(path: Path) -> bool:
         return False
 
 
-def _has_png(frame_dir: Path) -> bool:
+def _has_nonempty_png(frame_dir: Path) -> bool:
     try:
-        return any(candidate.is_file() for candidate in frame_dir.glob("*.png"))
+        return any(
+            _is_nonempty_regular_file(candidate) for candidate in frame_dir.glob("*.png")
+        )
     except OSError:
         return False

@@ -43,6 +43,15 @@ if mode == "missing-audio" and is_audio:
     raise SystemExit(0)
 if mode == "missing-frames" and not is_audio:
     raise SystemExit(0)
+if mode == "missing-audio-stderr" and is_audio:
+    print("audio success diagnostic", file=sys.stderr)
+    raise SystemExit(0)
+if mode == "missing-frames-stderr" and not is_audio:
+    print("frame success diagnostic", file=sys.stderr)
+    raise SystemExit(0)
+if mode == "zero-byte-frames" and not is_audio:
+    output.with_name("frame_000001.png").write_bytes(b"")
+    raise SystemExit(0)
 
 if is_audio:
     output.write_bytes(b"RIFF fake wav")
@@ -136,6 +145,43 @@ def test_decode_member_rejects_successful_ffmpeg_without_required_output(
     with pytest.raises(media.MediaError, match=message):
         with media.decode_member(ffmpeg, b"fake mp4", work_root):
             pytest.fail("the caller body must not run without both outputs")
+
+    assert list(work_root.iterdir()) == []
+
+
+def test_decode_member_rejects_zero_byte_png_and_cleans_temporary_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media = _media()
+    ffmpeg, _ = _fake_ffmpeg(tmp_path, monkeypatch, mode="zero-byte-frames")
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+
+    with pytest.raises(media.MediaError, match="frame output"):
+        with media.decode_member(ffmpeg, b"fake mp4", work_root):
+            pytest.fail("the caller body must not run with an empty PNG")
+
+    assert list(work_root.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("mode", "diagnostic"),
+    [
+        ("missing-audio-stderr", "audio success diagnostic"),
+        ("missing-frames-stderr", "frame success diagnostic"),
+    ],
+)
+def test_decode_member_includes_successful_ffmpeg_stderr_when_output_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, diagnostic: str
+) -> None:
+    media = _media()
+    ffmpeg, _ = _fake_ffmpeg(tmp_path, monkeypatch, mode=mode)
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+
+    with pytest.raises(media.MediaError, match=diagnostic):
+        with media.decode_member(ffmpeg, b"fake mp4", work_root):
+            pytest.fail("the caller body must not run without required output")
 
     assert list(work_root.iterdir()) == []
 
