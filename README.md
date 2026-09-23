@@ -88,7 +88,7 @@ output_dir = "artifacts/q1-default"
 
 其中 `seven_zip` 和 `ffmpeg` 必须是存在且可执行的本地文件，`audit_dir` 必须含有已审计的 `raw_samples.csv`，`archive` 必须是该审计对应的分卷 ZIP 最后 `.zip` 卷。`model_cache` 必须预先包含本地 `facebook/wav2vec2-base-960h` 对齐权重、`bert-base-uncased`、`face_landmarker.task`；流程只从这些路径加载，不会自动下载模型或在资产缺失时生成替代特征。
 
-WhisperX 的英文分词还要求 `model_cache/nltk_data` 中存在显式的 `punkt_tab`。以下命令是运行者在提取前一次性执行的准备动作，不是管线的运行时行为：
+WhisperX 的英文分词还要求 `model_cache/nltk_data` 中存在显式的 `punkt_tab`。下载器的 `-d` 目标必须是 **`q1.toml` 中实际 `model_cache` 值的 `nltk_data` 子目录**，即 `<the exact q1.toml model_cache value>/nltk_data`；不能在修改 `model_cache` 后仍沿用默认目录。以下是上面默认 `model_cache = ".tools/models"` 时、运行者在提取前一次性执行的可复制准备命令，不是管线的运行时行为：
 
 ```bash
 python3 -m nltk.downloader -d .tools/models/nltk_data punkt_tab
