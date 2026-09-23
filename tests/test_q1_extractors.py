@@ -133,13 +133,13 @@ def test_normalize_mediapipe_frame_pads_blendshapes_and_emits_56_dimensions() ->
         face_area=0.2,
         center_x=0.5,
         center_y=0.6,
-        detector_score=0.9,
+        face_presence=1.0,
     )
 
     assert values.shape == (56,)
     assert values.dtype == np.float32
     assert values[:5].tolist() == [0.0, 1.0, 2.0, 0.0, 0.0]
-    assert values[-4:].tolist() == pytest.approx([0.2, 0.5, 0.6, 0.9])
+    assert values[-4:].tolist() == pytest.approx([0.2, 0.5, 0.6, 1.0])
 
 
 def test_normalize_opensmile_windows_requires_exactly_25_lld_dimensions() -> None:
@@ -158,6 +158,23 @@ def test_normalize_opensmile_windows_requires_exactly_25_lld_dimensions() -> Non
             np.ones((1, 24), dtype=np.float32),
             np.array([0.0]),
             np.array([0.025]),
+        )
+
+
+def test_feature_normalizers_reject_values_that_overflow_float32() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        extractors.normalize_bert_embeddings(np.full((1, 768), 1e100))
+    with pytest.raises(ValueError, match="finite"):
+        extractors.normalize_opensmile_windows(
+            np.full((1, 25), 1e100), np.array([0.0]), np.array([0.025])
+        )
+    with pytest.raises(ValueError, match="finite"):
+        extractors.normalize_mediapipe_frame(
+            np.array([1e100]),
+            face_area=0.2,
+            center_x=0.5,
+            center_y=0.6,
+            face_presence=1.0,
         )
 
 
@@ -251,9 +268,12 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
     class FakeWhisperX:
         segments: list[dict[str, object]] | None = None
 
-        @staticmethod
-        def load_align_model(**kwargs: object) -> tuple[object, object]:
+        def __init__(self) -> None:
+            self.load_count = 0
+
+        def load_align_model(self, **kwargs: object) -> tuple[object, object]:
             assert kwargs["model_cache_only"] is True
+            self.load_count += 1
             return object(), object()
 
         @staticmethod
@@ -277,15 +297,35 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
     whisperx = FakeWhisperX()
     _patch_optional_packages(monkeypatch, {"whisperx": whisperx})
 
-    words = extractors.build_whisperx_aligner(cache).align(
-        wav_path, "hello world", 1.0
-    )
+    aligner = extractors.build_whisperx_aligner(cache)
+    words = aligner.align(wav_path, "hello world", 1.0)
+    repeated_words = aligner.align(wav_path, "hello world", 1.0)
 
+    assert whisperx.load_count == 1
     assert whisperx.segments == [{"start": 0.0, "end": 1.0, "text": "hello world"}]
     assert words == (
         WordInterval("hello", 0.1, 0.4, 0, 5),
         WordInterval("world", 0.6, 0.9, 6, 11),
     )
+    assert repeated_words == words
+
+
+@pytest.mark.parametrize("error_type", [OSError, RuntimeError])
+def test_whisperx_factory_reports_local_alignment_model_load_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+) -> None:
+    cache = tmp_path / "models"
+    (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
+
+    class FailingWhisperX:
+        @staticmethod
+        def load_align_model(**_: object) -> object:
+            raise error_type("missing local alignment snapshot")
+
+    _patch_optional_packages(monkeypatch, {"whisperx": FailingWhisperX()})
+
+    with pytest.raises(RuntimeError, match="WhisperX.*facebook/wav2vec2-base-960h"):
+        extractors.build_whisperx_aligner(cache)
 
 
 def test_opensmile_factory_requests_lld_and_returns_25_dimensional_windows(
@@ -367,6 +407,53 @@ def test_mediapipe_factory_returns_exactly_empty_56_dimensional_frames_without_f
     assert values.dtype == np.float32
     assert starts.shape == (0,)
     assert ends.shape == (0,)
+
+
+def test_mediapipe_detected_face_emits_presence_not_fabricated_detector_score(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "models"
+    cache.mkdir()
+    (cache / "face_landmarker.task").write_bytes(b"fake model")
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
+    (frame_dir / "frame_000001.png").write_bytes(b"fake png")
+
+    class FakeLandmarker:
+        @staticmethod
+        def detect(_: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                face_landmarks=[
+                    [SimpleNamespace(x=0.2, y=0.3), SimpleNamespace(x=0.6, y=0.7)]
+                ],
+                face_blendshapes=[[SimpleNamespace(score=0.25)]],
+                face_detection_scores=[0.05],
+            )
+
+    class FaceLandmarker:
+        @staticmethod
+        def create_from_options(_: object) -> FakeLandmarker:
+            return FakeLandmarker()
+
+    fake_mediapipe = SimpleNamespace(
+        Image=SimpleNamespace(create_from_file=lambda _: object()),
+        tasks=SimpleNamespace(
+            BaseOptions=lambda **kwargs: kwargs,
+            vision=SimpleNamespace(
+                FaceLandmarkerOptions=lambda **kwargs: kwargs,
+                FaceLandmarker=FaceLandmarker,
+                RunningMode=SimpleNamespace(IMAGE="IMAGE"),
+            ),
+        ),
+    )
+    _patch_optional_packages(monkeypatch, {"mediapipe": fake_mediapipe})
+
+    values, starts, ends = extractors.build_mediapipe_extractor(cache).extract(frame_dir)
+
+    assert values.shape == (1, 56)
+    assert values[0, -4:].tolist() == pytest.approx([0.16, 0.4, 0.5, 1.0])
+    assert starts.tolist() == [0.0]
+    assert ends.tolist() == [0.1]
 
 
 @pytest.mark.parametrize(

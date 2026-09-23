@@ -1,4 +1,9 @@
-"""Lazy external feature adapters for Question 1 time-aligned extraction."""
+"""Lazy external feature adapters for Question 1 time-aligned extraction.
+
+MediaPipe rows end with face area, face centre x/y, and face presence. The final
+channel is not a detector-confidence score: no detected face produces no row,
+and every emitted face row has a presence value of ``1.0``.
+"""
 
 from __future__ import annotations
 
@@ -120,15 +125,16 @@ def normalize_mediapipe_frame(
     face_area: object,
     center_x: object,
     center_y: object,
-    detector_score: object,
+    face_presence: object,
 ) -> np.ndarray:
-    """Build one fixed 56-dimensional Face Landmarker feature vector."""
+    """Build [52 blendshapes, area, centre x/y, face presence] for one face."""
 
     scores = np.asarray(blendshape_scores)
     if scores.ndim != 1 or np.iscomplexobj(scores):
         raise ValueError("MediaPipe blendshape scores must be a real one-dimensional array")
     try:
-        scores = scores.astype(np.float32, copy=False)
+        with np.errstate(over="ignore", invalid="ignore"):
+            scores = scores.astype(np.float32, copy=False)
     except (TypeError, ValueError, OverflowError) as error:
         raise ValueError(
             "MediaPipe blendshape scores must be a real one-dimensional array"
@@ -140,17 +146,23 @@ def normalize_mediapipe_frame(
     features[: min(len(scores), _MEDIAPIPE_BLENDSHAPE_DIMENSIONS)] = scores[
         :_MEDIAPIPE_BLENDSHAPE_DIMENSIONS
     ]
-    features[-4:] = np.asarray(
-        [
-            _finite_scalar(face_area, "face_area"),
-            _finite_scalar(center_x, "center_x"),
-            _finite_scalar(center_y, "center_y"),
-            _finite_scalar(detector_score, "detector_score"),
-        ],
-        dtype=np.float32,
-    )
+    presence = _finite_scalar(face_presence, "face_presence")
+    if presence != 1.0:
+        raise ValueError("face_presence must be 1.0 for a detected face")
+    with np.errstate(over="ignore", invalid="ignore"):
+        features[-4:] = np.asarray(
+            [
+                _finite_scalar(face_area, "face_area"),
+                _finite_scalar(center_x, "center_x"),
+                _finite_scalar(center_y, "center_y"),
+                presence,
+            ],
+            dtype=np.float32,
+        )
     if features[-4] < 0:
         raise ValueError("face_area must be non-negative")
+    if not np.all(np.isfinite(features)):
+        raise ValueError("MediaPipe features must be finite after float32 conversion")
     return features
 
 
@@ -165,7 +177,21 @@ def build_whisperx_aligner(model_cache: Path) -> WordAligner:
         "models--facebook--wav2vec2-base-960h",
         "wav2vec2-base-960h",
     )
-    return _WhisperXAligner(whisperx, cache)
+    try:
+        align_model, metadata = whisperx.load_align_model(
+            language_code="en",
+            device="cpu",
+            model_name="facebook/wav2vec2-base-960h",
+            model_dir=str(cache),
+            model_cache_only=True,
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise RuntimeError(
+            "WhisperX could not load expected local alignment asset "
+            "'facebook/wav2vec2-base-960h' from model cache "
+            f"{cache}; downloads are disabled"
+        ) from error
+    return _WhisperXAligner(whisperx, align_model, metadata)
 
 
 def build_bert_encoder(model_cache: Path) -> TextEncoder:
@@ -242,9 +268,10 @@ def build_mediapipe_extractor(model_cache: Path) -> VisionExtractor:
 
 
 class _WhisperXAligner:
-    def __init__(self, whisperx: Any, model_cache: Path) -> None:
+    def __init__(self, whisperx: Any, align_model: Any, metadata: Any) -> None:
         self._whisperx = whisperx
-        self._model_cache = model_cache
+        self._align_model = align_model
+        self._metadata = metadata
 
     def align(
         self, wav_path: Path, transcript: str, duration: float
@@ -255,25 +282,11 @@ class _WhisperXAligner:
         duration = _finite_time(duration, "duration")
         if duration <= 0:
             raise ValueError("duration must be finite and positive")
-        try:
-            align_model, metadata = self._whisperx.load_align_model(
-                language_code="en",
-                device="cpu",
-                model_name="facebook/wav2vec2-base-960h",
-                model_dir=str(self._model_cache),
-                model_cache_only=True,
-            )
-        except OSError as error:
-            raise RuntimeError(
-                "WhisperX expected local alignment asset "
-                "'facebook/wav2vec2-base-960h' in model cache "
-                f"{self._model_cache}; downloads are disabled"
-            ) from error
         audio = self._whisperx.load_audio(str(wav_path))
         aligned = self._whisperx.align(
             [{"start": 0.0, "end": duration, "text": transcript}],
-            align_model,
-            metadata,
+            self._align_model,
+            self._metadata,
             audio,
             "cpu",
             return_char_alignments=False,
@@ -351,7 +364,7 @@ class _MediaPipeExtractor:
                     face_area=_face_area(landmarks),
                     center_x=_face_center(landmarks, "x"),
                     center_y=_face_center(landmarks, "y"),
-                    detector_score=_detector_score(result),
+                    face_presence=1.0,
                 )
             )
             start = index / 10.0
@@ -405,9 +418,11 @@ def _float_matrix(value: object, name: str) -> np.ndarray:
         raise ValueError(f"{name} must be a 2D real floating-point array")
     if not np.issubdtype(values.dtype, np.floating):
         raise ValueError(f"{name} must be a 2D real floating-point array")
-    if not np.all(np.isfinite(values)):
-        raise ValueError(f"{name} must be finite")
-    return values.astype(np.float32, copy=False)
+    with np.errstate(over="ignore", invalid="ignore"):
+        converted = values.astype(np.float32, copy=False)
+    if not np.all(np.isfinite(converted)):
+        raise ValueError(f"{name} must be finite after float32 conversion")
+    return converted
 
 
 def _word_intervals(intervals: Sequence[WordInterval]) -> tuple[WordInterval, ...]:
@@ -611,10 +626,3 @@ def _face_center(landmarks: Sequence[object], coordinate: str) -> float:
     if not np.all(np.isfinite(values)):
         raise RuntimeError("MediaPipe returned non-finite face landmarks")
     return float((values.min() + values.max()) / 2.0)
-
-
-def _detector_score(result: object) -> float:
-    scores = getattr(result, "face_detection_scores", ())
-    if scores:
-        return _finite_scalar(scores[0], "detector_score")
-    return 1.0

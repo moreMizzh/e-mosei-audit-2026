@@ -36,7 +36,7 @@ FFmpeg 解码为单声道 16 kHz PCM。以 25 ms 帧长、10 ms 帧移运行 Ope
 
 ### 4. 视觉
 
-FFmpeg 以 10 FPS 抽帧，使用本地缓存的 MediaPipe Face Landmarker `face_landmarker.task` 提取 52 维面部 blendshape、3 维归一化几何与人脸检测置信度，共 56 维帧级视觉向量。对同一槽的有效帧池化，记录人脸检测成功率与 `vision_mask`。没有检测到人脸是观察结果，不等价于赛题的局部模态缺失。
+FFmpeg 以 10 FPS 抽帧，使用本地缓存的 MediaPipe Face Landmarker `face_landmarker.task` 提取 52 维面部 blendshape、人脸面积、中心 x/y 与人脸存在标记，共 56 维帧级视觉向量。只有检测到人脸时才输出该帧的向量，其存在标记固定为 `1.0`；Face Landmarker 不提供可用的人脸检测置信度。对同一槽的有效帧池化，记录人脸检测成功率与 `vision_mask`。没有检测到人脸是观察结果，不等价于赛题的局部模态缺失。
 
 ### 5. 统一输出
 
