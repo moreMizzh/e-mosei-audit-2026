@@ -23,3 +23,6 @@ e-mosei-audit = "e_mosei_audit.cli:main"
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+  "integration: runs against the full competition archive when explicitly configured",
+]
