@@ -3,6 +3,7 @@
 .pytest_cache/
 __pycache__/
 *.py[cod]
+*.egg-info/
 
 # Original competition materials are read-only inputs, never source files.
 E题数据*.zip
