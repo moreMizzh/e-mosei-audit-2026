@@ -78,7 +78,15 @@ def _config(tmp_path: Path) -> Q1Config:
     seven_zip = tmp_path / "7za"
     seven_zip.write_bytes(b"tool")
     ffmpeg = tmp_path / "ffmpeg"
-    ffmpeg.write_bytes(b"tool")
+    ffmpeg.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"-version\" ]; then\n"
+        "  echo 'fake-ffmpeg version 1.0'\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    ffmpeg.chmod(0o755)
     model_cache = tmp_path / "models"
     model_cache.mkdir()
     return Q1Config(
@@ -149,6 +157,8 @@ def fake_decode(monkeypatch, tmp_path: Path) -> None:
         wav_path.write_bytes(b"wav")
         frame_dir = media_root / "frames"
         frame_dir.mkdir(exist_ok=True)
+        for index in range(4):
+            (frame_dir / f"frame_{index:06d}.png").write_bytes(b"png")
         yield DecodedMedia(wav_path=wav_path, frame_dir=frame_dir)
 
     monkeypatch.setattr(runner, "decode_member", decode)
@@ -182,6 +192,13 @@ def test_run_q1_writes_success_and_failure_coverage_with_evidence(
             encoding="utf-8"
         )
     )
+    feature_contract = json.loads(
+        (config.output_dir / "feature_contract.json").read_text(encoding="utf-8")
+    )
+    manifest = json.loads(
+        (config.output_dir / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    typical = (config.output_dir / "typical_sample.md").read_text(encoding="utf-8")
     assert summary == {"coverage_count": 2, "success_count": 1, "failed_count": 1}
     assert [row["status"] for row in coverage] == ["success", "failed"]
     assert coverage[0]["feature_path"] == "features/video-a_01.npz"
@@ -192,6 +209,52 @@ def test_run_q1_writes_success_and_failure_coverage_with_evidence(
     assert evidence["slots"][0] == [0.0, 0.02]
     assert evidence["masks"]["vision"][0] is True
     assert evidence["face_presence"]["name"] == "face_presence"
+    assert evidence["face_presence"]["meaning"] == (
+        "1.0 denotes a detected face, not a detector confidence; frames without a "
+        "detected face produce no visual row."
+    )
+    assert evidence["original_words"][0]["word"] == "hello"
+    assert evidence["original_words"][0]["overlap_slot_indexes"] == list(range(50))
+    assert evidence["token_intervals"][0] == {
+        "text": "hello",
+        "char_start": 0,
+        "char_end": 5,
+        "start": 0.0,
+        "end": 1.0,
+        "overlap_slot_indexes": list(range(50)),
+    }
+    assert evidence["audio_windows"][0] == {
+        "start": 0.0,
+        "end": 1.0,
+        "overlap_slot_indexes": list(range(50)),
+    }
+    assert evidence["detected_visual_rows"][0] == {
+        "start": 0.0,
+        "end": 1.0,
+        "frame_index": 0,
+        "overlap_slot_indexes": list(range(50)),
+    }
+    assert evidence["decoded_frame_count"] == 4
+    assert evidence["detected_face_frame_count"] == 1
+    assert evidence["face_detection_rate"] == 0.25
+    assert "values" not in evidence["audio_windows"][0]
+    assert "values" not in evidence["detected_visual_rows"][0]
+    assert manifest["reproducibility"]["source_archive"]["zip"]["size"] == 7
+    assert len(manifest["reproducibility"]["source_archive"]["zip"]["sha256"]) == 64
+    assert manifest["reproducibility"]["tool_versions"]["ffmpeg"]["version"] == (
+        "fake-ffmpeg version 1.0"
+    )
+    assert manifest["reproducibility"]["parameters"]["slot_count"] == 50
+    assert manifest["reproducibility"]["models"]["bert"]["id"] == "bert-base-uncased"
+    assert feature_contract["reproducibility"]["parameters"]["vision"]["fps"] == 10
+    assert feature_contract["output_counts"] == summary
+    table_rows = [
+        line
+        for line in typical.splitlines()
+        if line.startswith("| ") and line.split("|")[1].strip().isdigit()
+    ]
+    assert len(table_rows) == 50
+    assert "| 0 | 0.000000 | 0.020000 | hello | 0 |" in typical
     assert archive.verify_count == 1
     assert archive.list_count == 1
     assert archive.read_calls == [str(row["member_path"]) for row in rows]
@@ -212,6 +275,9 @@ def test_run_q1_marks_noneligible_audit_row_failed_without_reading_archive(tmp_p
     assert summary == {"coverage_count": 1, "success_count": 0, "failed_count": 1}
     assert coverage[0]["failure_reason"] == "mapping_status must be matched"
     assert archive.read_calls == []
+    assert "No successful sample was extracted." in (
+        config.output_dir / "typical_sample.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_run_q1_default_dependency_failure_does_not_create_output(
@@ -233,6 +299,26 @@ def test_run_q1_default_dependency_failure_does_not_create_output(
         runner.run_q1(config, archive=archive, limit=1)
 
     assert not config.output_dir.exists()
+    assert archive.read_calls == []
+
+
+def test_run_q1_ffmpeg_preflight_failure_leaves_output_absent_without_archive_reads(
+    tmp_path: Path,
+) -> None:
+    from e_mosei_audit.q1.runner import run_q1
+
+    config = _config(tmp_path)
+    config.ffmpeg.chmod(0o644)
+    rows = [_row("video-a_01")]
+    _write_audit_rows(config.audit_dir, rows)
+    archive = _archive_for(rows)
+
+    with pytest.raises(RuntimeError, match="ffmpeg preflight"):
+        run_q1(config, archive=archive, extractors=_extractors(), limit=1)
+
+    assert not config.output_dir.exists()
+    assert archive.verify_count == 0
+    assert archive.list_count == 0
     assert archive.read_calls == []
 
 

@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import importlib.metadata
 import json
 import math
+import os
+import platform
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,9 +59,10 @@ _FEATURE_CONTRACT = {
     "slots": {"shape": [50, 2], "dtype": "float64"},
     "masks": {"shape": [50], "dtype": "bool"},
     "vision_channels": {
-        "face_presence": "1.0 denotes a detected face; frames without a detected face produce no visual row."
+        "face_presence": "1.0 denotes a detected face, not a detector confidence; frames without a detected face produce no visual row."
     },
 }
+_FFMPEG_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -79,12 +86,22 @@ def run_q1(
 
     _validate_output_target(config.output_dir)
     selected_rows = _select_audit_rows(config.audit_dir, limit)
+    ffmpeg_preflight = _preflight_ffmpeg(config.ffmpeg)
 
     active_archive = archive or SevenZipArchive(config.archive, config.seven_zip)
+    archive_tool = _preflight_archive_tool(config.seven_zip, injected=archive is not None)
     active_archive.verify()
     members = active_archive.list_members()
     member_paths = _member_paths(members)
     active_extractors = extractors or _build_default_extractors(config)
+    reproducibility = _reproducibility_metadata(
+        config,
+        limit=limit,
+        source_archive=_source_archive_fingerprint(config.archive),
+        ffmpeg_preflight=ffmpeg_preflight,
+        archive_tool=archive_tool,
+        injected_extractors=extractors is not None,
+    )
 
     config.output_dir.mkdir()
     coverage_rows: list[dict[str, object]] = []
@@ -119,7 +136,12 @@ def run_q1(
     )
     _write_json(
         config.output_dir / "feature_contract.json",
-        {**_FEATURE_CONTRACT, "extractors": _extractor_identity(active_extractors)},
+        {
+            **_FEATURE_CONTRACT,
+            "extractors": _extractor_identity(active_extractors),
+            "reproducibility": reproducibility,
+            "output_counts": counts,
+        },
     )
     _write_json(
         config.output_dir / "run_manifest.json",
@@ -134,6 +156,8 @@ def run_q1(
             "archive_member_count": len(members),
             "selected_row_count": len(selected_rows),
             **counts,
+            "output_counts": counts,
+            "reproducibility": reproducibility,
         },
     )
     (config.output_dir / "run.log").write_text(
@@ -153,6 +177,209 @@ def _validate_output_target(output_dir: object) -> Path:
     if not output_dir.parent.is_dir():
         raise ValueError(f"output_dir parent must be an existing directory: {output_dir.parent}")
     return output_dir
+
+
+def _preflight_ffmpeg(ffmpeg: object) -> dict[str, object]:
+    if (
+        not isinstance(ffmpeg, Path)
+        or not ffmpeg.is_file()
+        or not os.access(ffmpeg, os.X_OK)
+    ):
+        raise RuntimeError(
+            f"ffmpeg preflight requires an executable regular file: {ffmpeg}"
+        )
+    command = [str(ffmpeg), "-version"]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=_FFMPEG_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"ffmpeg preflight timed out after {_FFMPEG_TIMEOUT_SECONDS:g} seconds"
+        ) from error
+    except OSError as error:
+        raise RuntimeError(f"ffmpeg preflight could not run: {error}") from error
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "no diagnostic output").strip()
+        raise RuntimeError(f"ffmpeg preflight failed: {detail}")
+    version_output = (completed.stdout or completed.stderr).strip()
+    version = version_output.splitlines()[0] if version_output else "available (no version text)"
+    return {"path": str(ffmpeg), "command": command, "version": version}
+
+
+def _preflight_archive_tool(seven_zip: Path, *, injected: bool) -> dict[str, object]:
+    if injected:
+        return {
+            "path": str(seven_zip),
+            "command": None,
+            "version": "not-applicable: injected archive",
+        }
+    if not seven_zip.is_file() or not os.access(seven_zip, os.X_OK):
+        raise RuntimeError(
+            f"7-Zip preflight requires an executable regular file: {seven_zip}"
+        )
+    command = [str(seven_zip), "i"]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=_FFMPEG_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("7-Zip preflight timed out") from error
+    except OSError as error:
+        raise RuntimeError(f"7-Zip preflight could not run: {error}") from error
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "no diagnostic output").strip()
+        raise RuntimeError(f"7-Zip preflight failed: {detail}")
+    version_output = (completed.stdout or completed.stderr).strip()
+    version = version_output.splitlines()[0] if version_output else "available (no version text)"
+    return {"path": str(seven_zip), "command": command, "version": version}
+
+
+def _source_archive_fingerprint(archive: Path) -> dict[str, object]:
+    if not archive.is_file():
+        raise RuntimeError(f"source archive fingerprint requires a regular file: {archive}")
+    split_volumes = sorted(
+        archive.parent.glob(f"{archive.stem}.z[0-9][0-9]"),
+        key=lambda candidate: int(candidate.suffix[2:]),
+    )
+    return {
+        "zip": _file_fingerprint(archive),
+        "split_volumes": [_file_fingerprint(volume) for volume in split_volumes],
+    }
+
+
+def _file_fingerprint(path: Path) -> dict[str, object]:
+    try:
+        with path.open("rb") as source:
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
+        size = path.stat().st_size
+    except OSError as error:
+        raise RuntimeError(f"could not fingerprint source file {path}: {error}") from error
+    return {"path": str(path), "size": size, "sha256": digest}
+
+
+def _reproducibility_metadata(
+    config: Q1Config,
+    *,
+    limit: int | None,
+    source_archive: Mapping[str, object],
+    ffmpeg_preflight: Mapping[str, object],
+    archive_tool: Mapping[str, object],
+    injected_extractors: bool,
+) -> dict[str, object]:
+    return {
+        "source_archive": dict(source_archive),
+        "logical_invocation": {
+            "operation": "run_q1",
+            "mode": "full" if limit is None else "smoke",
+            "limit": limit,
+            "output_dir": str(config.output_dir),
+        },
+        "tool_commands": {
+            "archive_verify": [str(config.seven_zip), "t", str(config.archive)],
+            "archive_list": [str(config.seven_zip), "l", "-slt", str(config.archive)],
+            "ffmpeg_preflight": ffmpeg_preflight["command"],
+            "audio_decode": [
+                str(config.ffmpeg),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                "<archive-member.mp4>",
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "<audio.wav>",
+            ],
+            "frame_decode": [
+                str(config.ffmpeg),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                "<archive-member.mp4>",
+                "-vf",
+                "fps=10",
+                "<frames/frame_%06d.png>",
+            ],
+        },
+        "tool_versions": {
+            "ffmpeg": dict(ffmpeg_preflight),
+            "seven_zip": dict(archive_tool),
+        },
+        "python": {
+            "implementation": platform.python_implementation(),
+            "version": platform.python_version(),
+            "executable": sys.executable,
+        },
+        "packages": {
+            package: _package_version(package)
+            for package in (
+                "numpy",
+                "transformers",
+                "torch",
+                "whisperx",
+                "opensmile",
+                "mediapipe",
+            )
+        },
+        "models": {
+            "whisperx_alignment": {
+                "id": "facebook/wav2vec2-base-960h",
+                "local_cache": str(config.model_cache),
+            },
+            "bert": {"id": "bert-base-uncased", "local_cache": str(config.model_cache)},
+            "mediapipe_face_landmarker": {
+                "id": "face_landmarker.task",
+                "local_cache": str(config.model_cache),
+            },
+            "extractors": "injected" if injected_extractors else "configured local models",
+        },
+        "parameters": {
+            "slot_count": 50,
+            "slots": "50 contiguous physical intervals spanning audited duration",
+            "text": {"dimensions": 768, "model": "bert-base-uncased"},
+            "audio": {
+                "extractor": "OpenSMILE eGeMAPSv02 LowLevelDescriptors",
+                "window_dimensions": 25,
+                "pooled_dimensions": 50,
+                "pooling": "overlap-weighted mean and population standard deviation",
+                "decode_sample_rate_hz": 16000,
+                "decode_channels": 1,
+            },
+            "vision": {
+                "extractor": "MediaPipe Face Landmarker",
+                "fps": 10,
+                "dimensions": 56,
+                "channel_layout": [
+                    *[f"blendshape_{index}" for index in range(52)],
+                    "face_area",
+                    "face_center_x",
+                    "face_center_y",
+                    "face_presence",
+                ],
+            },
+        },
+    }
+
+
+def _package_version(package: str) -> str:
+    try:
+        return importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        return "unavailable"
 
 
 def _select_audit_rows(audit_dir: Path, limit: int | None) -> list[dict[str, str]]:
@@ -245,17 +472,24 @@ def _extract_audited_row(
             vision, vision_mask = pool_intervals(
                 vision_values, vision_starts, vision_ends, slots
             )
+            decoded_frame_count = len(tuple(media.frame_dir.glob("*.png")))
 
         evidence = _evidence(
             sample_id=sample_id,
             transcript=transcript,
             slots=slots,
             words=words,
+            token_intervals=text_intervals,
             text_mask=text_mask,
             audio_mask=audio_mask,
             vision_mask=vision_mask,
+            audio_starts=audio_starts,
+            audio_ends=audio_ends,
+            vision_starts=vision_starts,
+            vision_ends=vision_ends,
             audio_window_count=len(audio_values),
             visual_frame_count=len(vision_values),
+            decoded_frame_count=decoded_frame_count,
         )
         _write_json(evidence_path, evidence)
         SampleFeatures(
@@ -364,26 +598,33 @@ def _evidence(
     transcript: str,
     slots: np.ndarray,
     words: Sequence[WordInterval],
+    token_intervals: Sequence[WordInterval],
     text_mask: np.ndarray,
     audio_mask: np.ndarray,
     vision_mask: np.ndarray,
+    audio_starts: object,
+    audio_ends: object,
+    vision_starts: object,
+    vision_ends: object,
     audio_window_count: int,
     visual_frame_count: int,
+    decoded_frame_count: int,
 ) -> dict[str, object]:
+    original_words = _text_interval_records(transcript, words, slots, key="word")
+    tokens = _text_interval_records(transcript, token_intervals, slots, key="text")
+    audio_windows = _time_interval_records(audio_starts, audio_ends, slots)
+    visual_rows = _time_interval_records(
+        vision_starts, vision_ends, slots, include_frame_index=True
+    )
+    face_detection_rate = (
+        visual_frame_count / decoded_frame_count if decoded_frame_count else 0.0
+    )
     return {
         "sample_id": sample_id,
         "transcript": transcript,
         "slots": slots.tolist(),
-        "word_intervals": [
-            {
-                "word": word.word,
-                "start": word.start,
-                "end": word.end,
-                "char_start": word.char_start,
-                "char_end": word.char_end,
-            }
-            for word in words
-        ],
+        "original_words": original_words,
+        "token_intervals": tokens,
         "masks": {
             "text": text_mask.tolist(),
             "audio": audio_mask.tolist(),
@@ -391,11 +632,76 @@ def _evidence(
         },
         "audio_window_count": audio_window_count,
         "visual_frame_count": visual_frame_count,
+        "audio_windows": audio_windows,
+        "detected_visual_rows": visual_rows,
+        "decoded_frame_count": decoded_frame_count,
+        "detected_face_frame_count": visual_frame_count,
+        "face_detection_rate": face_detection_rate,
         "face_presence": {
             "name": "face_presence",
-            "meaning": "1.0 denotes a detected face; a frame without a detected face produces no visual row.",
+            "meaning": "1.0 denotes a detected face, not a detector confidence; frames without a detected face produce no visual row.",
         },
     }
+
+
+def _text_interval_records(
+    transcript: str, intervals: Sequence[WordInterval], slots: np.ndarray, *, key: str
+) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for interval in intervals:
+        _validate_transcript_span(transcript, interval)
+        records.append(
+            {
+                key: transcript[interval.char_start : interval.char_end],
+                "char_start": interval.char_start,
+                "char_end": interval.char_end,
+                "start": interval.start,
+                "end": interval.end,
+                "overlap_slot_indexes": _overlap_slot_indexes(
+                    interval.start, interval.end, slots
+                ),
+            }
+        )
+    return records
+
+
+def _time_interval_records(
+    starts: object,
+    ends: object,
+    slots: np.ndarray,
+    *,
+    include_frame_index: bool = False,
+) -> list[dict[str, object]]:
+    start_values = np.asarray(starts, dtype=np.float64)
+    end_values = np.asarray(ends, dtype=np.float64)
+    if start_values.ndim != 1 or end_values.ndim != 1 or start_values.shape != end_values.shape:
+        raise ValueError("traceability timestamps must be matching one-dimensional arrays")
+    records: list[dict[str, object]] = []
+    for start, end in zip(start_values, end_values, strict=True):
+        if not math.isfinite(float(start)) or not math.isfinite(float(end)) or end <= start:
+            raise ValueError("traceability timestamps must be finite positive intervals")
+        record: dict[str, object] = {
+            "start": float(start),
+            "end": float(end),
+            "overlap_slot_indexes": _overlap_slot_indexes(float(start), float(end), slots),
+        }
+        if include_frame_index:
+            record["frame_index"] = int(round(float(start) * 10.0))
+        records.append(record)
+    return records
+
+
+def _validate_transcript_span(transcript: str, interval: WordInterval) -> None:
+    if interval.char_end > len(transcript):
+        raise ValueError("word interval character span exceeds the original transcript")
+
+
+def _overlap_slot_indexes(start: float, end: float, slots: np.ndarray) -> list[int]:
+    return [
+        index
+        for index, (slot_start, slot_end) in enumerate(slots)
+        if min(end, float(slot_end)) > max(start, float(slot_start))
+    ]
 
 
 def _extractor_identity(extractors: Q1Extractors) -> dict[str, str]:
@@ -421,14 +727,79 @@ def _write_json(path: Path, content: Mapping[str, Any]) -> None:
 def _render_typical_sample(evidence: Mapping[str, object] | None) -> str:
     if evidence is None:
         return "# Typical Q1 sample\n\nNo successful sample was extracted.\n"
-    return "\n".join(
-        (
-            "# Typical Q1 sample",
-            "",
-            f"- Sample: `{evidence['sample_id']}`",
-            f"- Transcript: {evidence['transcript']}",
-            f"- Audio windows: {evidence['audio_window_count']}",
-            f"- Visual frames with a detected face: {evidence['visual_frame_count']}",
-            "",
+    slots = _evidence_list(evidence, "slots")
+    tokens = _evidence_list(evidence, "token_intervals")
+    visual_rows = _evidence_list(evidence, "detected_visual_rows")
+    lines = [
+        "# Typical Q1 sample",
+        "",
+        f"- Sample: `{evidence['sample_id']}`",
+        f"- Transcript: {evidence['transcript']}",
+        f"- Audio windows: {evidence['audio_window_count']}",
+        f"- Decoded frames: {evidence['decoded_frame_count']}",
+        f"- Detected face frames: {evidence['detected_face_frame_count']}",
+        f"- Face detection rate: {float(evidence['face_detection_rate']):.6f}",
+        "",
+        "| Slot | Start (s) | End (s) | Text fragments | Detected frame indexes |",
+        "| ---: | ---: | ---: | --- | --- |",
+    ]
+    for index, bounds in enumerate(slots):
+        start, end = _slot_bounds(bounds)
+        fragments = _slot_text_fragments(tokens, index)
+        frame_indexes = _slot_frame_indexes(visual_rows, index)
+        lines.append(
+            "| "
+            f"{index} | {start:.6f} | {end:.6f} | "
+            f"{_markdown_cell(', '.join(fragments))} | "
+            f"{', '.join(frame_indexes)} |"
         )
-    )
+    return "\n".join(lines) + "\n"
+
+
+def _evidence_list(evidence: Mapping[str, object], field: str) -> list[object]:
+    value = evidence.get(field)
+    if not isinstance(value, list):
+        raise ValueError(f"typical sample evidence is missing list field: {field}")
+    return value
+
+
+def _slot_bounds(value: object) -> tuple[float, float]:
+    if not isinstance(value, list) or len(value) != 2:
+        raise ValueError("typical sample slot must contain start and end")
+    start = float(value[0])
+    end = float(value[1])
+    if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+        raise ValueError("typical sample slot must be finite and positive")
+    return start, end
+
+
+def _slot_text_fragments(tokens: list[object], slot_index: int) -> list[str]:
+    fragments: list[str] = []
+    for token in tokens:
+        if not isinstance(token, Mapping):
+            raise ValueError("typical sample token interval must be a mapping")
+        indexes = token.get("overlap_slot_indexes")
+        text = token.get("text")
+        if not isinstance(indexes, list) or not isinstance(text, str):
+            raise ValueError("typical sample token interval is invalid")
+        if slot_index in indexes:
+            fragments.append(text)
+    return fragments
+
+
+def _slot_frame_indexes(visual_rows: list[object], slot_index: int) -> list[str]:
+    indexes: list[str] = []
+    for visual_row in visual_rows:
+        if not isinstance(visual_row, Mapping):
+            raise ValueError("typical sample visual row must be a mapping")
+        slots = visual_row.get("overlap_slot_indexes")
+        frame_index = visual_row.get("frame_index")
+        if not isinstance(slots, list) or not isinstance(frame_index, int):
+            raise ValueError("typical sample visual row is invalid")
+        if slot_index in slots:
+            indexes.append(str(frame_index))
+    return indexes
+
+
+def _markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")

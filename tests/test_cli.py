@@ -154,3 +154,27 @@ def test_extract_q1_returns_two_for_config_errors(monkeypatch, capsys, tmp_path:
 
     assert status == 2
     assert "invalid config" in capsys.readouterr().err
+
+
+def test_extract_q1_returns_two_for_ffmpeg_preflight_error(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda path: _q1_config(tmp_path))
+    monkeypatch.setattr(
+        cli,
+        "run_q1",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("ffmpeg preflight requires an executable regular file")
+        ),
+    )
+
+    status = cli.main(
+        [
+            "extract-q1",
+            "--config",
+            str(tmp_path / "q1.toml"),
+            "--output",
+            str(tmp_path / "cli-output"),
+        ]
+    )
+
+    assert status == 2
+    assert "ffmpeg preflight" in capsys.readouterr().err
