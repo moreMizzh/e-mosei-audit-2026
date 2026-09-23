@@ -587,10 +587,15 @@ def _decoded_wav_audio(wav_path: Path) -> np.ndarray:
                 or stream.getnchannels() != 1
                 or stream.getframerate() != 16000
                 or stream.getsampwidth() != 2
-                or stream.getnframes() <= 0
             ):
                 raise ValueError(_decoded_wav_contract())
+            frame_width = stream.getnchannels() * stream.getsampwidth()
+            data_size = _declared_wav_data_size(stream)
+            if data_size <= 0 or data_size % frame_width:
+                raise ValueError(_decoded_wav_contract())
             frame_count = stream.getnframes()
+            if frame_count != data_size // frame_width:
+                raise ValueError(_decoded_wav_contract())
             raw_audio = stream.readframes(frame_count)
     except ValueError:
         raise
@@ -618,6 +623,18 @@ def _decoded_wav_contract() -> str:
         "decoded WAV must be a readable RIFF/WAVE regular file with one channel, "
         "16 kHz signed 16-bit PCM, and nonempty integral frames"
     )
+
+
+def _declared_wav_data_size(stream: Any) -> int:
+    """Return Wave_read's raw data-chunk length before frame-count flooring."""
+
+    try:
+        data_size = stream._data_chunk.chunksize
+    except AttributeError as error:
+        raise ValueError(_decoded_wav_contract()) from error
+    if isinstance(data_size, bool) or not isinstance(data_size, int):
+        raise ValueError(_decoded_wav_contract())
+    return data_size
 
 
 def _aligned_word_intervals(aligned: object, transcript: str) -> tuple[WordInterval, ...]:

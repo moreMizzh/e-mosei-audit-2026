@@ -59,6 +59,22 @@ def _write_pcm_wav(
             stream.writeframes(b"\0" * (len(samples) * sample_width))
 
 
+def _write_wav_with_dangling_data_byte(path: Path) -> None:
+    """Write a valid-prefix WAV whose declared data chunk ends mid-frame."""
+
+    _write_pcm_wav(path)
+    payload = bytearray(path.read_bytes())
+    data_chunk_offset = payload.index(b"data")
+    data_size_offset = data_chunk_offset + 4
+    data_size = int.from_bytes(payload[data_size_offset : data_size_offset + 4], "little")
+    data_end = data_chunk_offset + 8 + data_size
+    assert data_end == len(payload)
+    payload[data_size_offset : data_size_offset + 4] = (data_size + 1).to_bytes(4, "little")
+    payload[data_end:data_end] = b"\0\0"
+    payload[4:8] = (len(payload) - 8).to_bytes(4, "little")
+    path.write_bytes(payload)
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -454,6 +470,38 @@ def test_whisperx_aligner_rejects_invalid_decoded_wav_before_alignment(
     aligner = extractors.build_whisperx_aligner(cache)
 
     with pytest.raises(ValueError, match=r"decoded WAV.*16 kHz.*16-bit PCM"):
+        aligner.align(wav_path, "hello", 1.0)
+
+    assert alignment_attempts == []
+
+
+def test_whisperx_aligner_rejects_decoded_wav_with_dangling_data_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "models"
+    (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
+    wav_path = tmp_path / "audio.wav"
+    _write_wav_with_dangling_data_byte(wav_path)
+    nltk, _ = _fake_nltk(cache, has_punkt_tab=True)
+    alignment_attempts: list[object] = []
+
+    class FakeWhisperX:
+        @staticmethod
+        def load_align_model(**_: object) -> tuple[object, object]:
+            return object(), object()
+
+        @staticmethod
+        def load_audio(*_: object, **__: object) -> object:
+            raise AssertionError("Q1 must not call whisperx.load_audio")
+
+        def align(self, *_: object, **__: object) -> object:
+            alignment_attempts.append(object())
+            raise AssertionError("a dangling data byte must fail before align")
+
+    _patch_optional_packages(monkeypatch, {"whisperx": FakeWhisperX(), "nltk": nltk})
+    aligner = extractors.build_whisperx_aligner(cache)
+
+    with pytest.raises(ValueError, match=r"decoded WAV.*integral frames"):
         aligner.align(wav_path, "hello", 1.0)
 
     assert alignment_attempts == []
