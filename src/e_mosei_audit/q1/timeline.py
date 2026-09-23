@@ -3,20 +3,31 @@ from __future__ import annotations
 import numpy as np
 
 
+# Only absorb binary rounding at a shared boundary: one picosecond absolute.
+_SLOT_BOUNDARY_ATOL = 1e-12
+
+
 def make_slots(duration: float, count: int = 50) -> np.ndarray:
     if isinstance(duration, (bool, np.bool_)) or not isinstance(
         duration, (int, float, np.integer, np.floating)
     ):
         raise ValueError("duration must be finite and positive")
-    if not np.isfinite(duration) or duration <= 0:
+    try:
+        duration_float = float(duration)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("duration must be finite and positive") from error
+    if not np.isfinite(duration_float) or duration_float <= 0:
         raise ValueError("duration must be finite and positive")
     if isinstance(count, (bool, np.bool_)) or not isinstance(count, (int, np.integer)):
         raise ValueError("count must be a positive integer")
     if count <= 0:
         raise ValueError("count must be a positive integer")
 
-    boundaries = np.linspace(0.0, float(duration), count + 1)
-    return np.column_stack((boundaries[:-1], boundaries[1:]))
+    boundaries = np.linspace(0.0, duration_float, count + 1)
+    slots = np.column_stack((boundaries[:-1], boundaries[1:]))
+    if not np.all(np.isfinite(slots)):
+        raise ValueError("duration must produce finite slot boundaries")
+    return slots
 
 
 def pool_intervals(
@@ -80,10 +91,14 @@ def _validate_pool_inputs(
     if slots_array.ndim != 2 or slots_array.shape[1] != 2:
         raise ValueError("slots must have shape (S, 2)")
 
+    if np.iscomplexobj(values_array):
+        raise ValueError("values must be real and finite")
     try:
         values_array = values_array.astype(np.float64, copy=False)
-    except (TypeError, ValueError) as error:
+    except (TypeError, ValueError, OverflowError) as error:
         raise ValueError("values must be numeric") from error
+    if not np.all(np.isfinite(values_array)):
+        raise ValueError("values must be finite")
     starts_array = _as_finite_bounds(starts_array)
     ends_array = _as_finite_bounds(ends_array)
     slots_array = _as_finite_bounds(slots_array)
@@ -92,10 +107,14 @@ def _validate_pool_inputs(
         raise ValueError("source intervals must have positive duration")
     if np.any(slots_array[:, 1] <= slots_array[:, 0]):
         raise ValueError("slot intervals must have positive duration")
-    if np.any(slots_array[1:, 0] < slots_array[:-1, 1]):
+    boundary_deltas = slots_array[1:, 0] - slots_array[:-1, 1]
+    if np.any(boundary_deltas < -_SLOT_BOUNDARY_ATOL):
         raise ValueError("slots must be monotonic and non-overlapping")
-    if np.any(slots_array[1:, 0] > slots_array[:-1, 1]):
+    if np.any(boundary_deltas > _SLOT_BOUNDARY_ATOL):
         raise ValueError("slots must be contiguous")
+    if boundary_deltas.size:
+        slots_array = slots_array.copy()
+        slots_array[1:, 0] = slots_array[:-1, 1]
 
     return values_array, starts_array, ends_array, slots_array
 

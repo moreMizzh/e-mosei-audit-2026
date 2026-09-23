@@ -33,6 +33,18 @@ def test_make_slots_rejects_invalid_duration_or_count(
         make_slots(duration, count)
 
 
+@pytest.mark.parametrize(
+    "duration",
+    [10**400, np.longdouble(np.finfo(np.longdouble).max)],
+    ids=["huge-integer", "longdouble-overflow"],
+)
+def test_make_slots_rejects_durations_that_cannot_produce_finite_float_slots(
+    duration: object,
+) -> None:
+    with pytest.raises(ValueError, match="duration"):
+        make_slots(duration)
+
+
 def test_pool_intervals_uses_overlap_duration_not_interval_midpoints() -> None:
     values = np.array([[2.0], [10.0]], dtype=np.float32)
     starts = np.array([0.0, 0.5])
@@ -72,6 +84,18 @@ def test_pool_moments_concatenates_weighted_mean_and_population_deviation() -> N
 
     assert pooled.dtype == np.float32
     assert pooled.tolist() == [[4.0, 2.0]]
+    assert mask.tolist() == [True]
+
+
+def test_pool_moments_weights_mean_and_deviation_by_source_duration() -> None:
+    pooled, mask = pool_moments(
+        np.array([[0.0], [10.0]], dtype=np.float32),
+        np.array([0.0, 0.9]),
+        np.array([0.9, 1.0]),
+        np.array([[0.0, 1.0]]),
+    )
+
+    np.testing.assert_allclose(pooled, [[1.0, 3.0]])
     assert mask.tolist() == [True]
 
 
@@ -156,3 +180,31 @@ def test_pooling_rejects_gapped_slots(pool: object) -> None:
             np.array([1.0]),
             np.array([[0.0, 0.4], [0.6, 1.0]]),
         )
+
+
+@pytest.mark.parametrize("pool", [pool_intervals, pool_moments])
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.array([[np.nan]]),
+        np.array([[np.inf]]),
+        np.array([[1.0 + 2.0j]]),
+    ],
+)
+def test_pooling_rejects_nonfinite_or_complex_values(
+    pool: object, values: np.ndarray
+) -> None:
+    with pytest.raises(ValueError, match="values"):
+        pool(values, np.array([0.0]), np.array([1.0]), np.array([[0.0, 1.0]]))
+
+
+@pytest.mark.parametrize("pool", [pool_intervals, pool_moments])
+def test_pooling_accepts_slots_contiguous_with_floating_rounding(pool: object) -> None:
+    _, mask = pool(
+        np.array([[1.0]], dtype=np.float32),
+        np.array([0.0]),
+        np.array([1.0]),
+        np.array([[0.0, 0.1 + 0.2], [0.3, 1.0]]),
+    )
+
+    assert mask.tolist() == [True, True]
