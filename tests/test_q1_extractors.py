@@ -10,6 +10,31 @@ from e_mosei_audit.q1 import extractors
 from e_mosei_audit.q1.extractors import WordInterval, text_slot_features
 
 
+def _fake_nltk(cache: Path, *, has_punkt_tab: bool) -> tuple[SimpleNamespace, list[tuple[str, object]]]:
+    root = cache / "nltk_data"
+    resource = root / "tokenizers" / "punkt_tab" / "english.pickle"
+    if has_punkt_tab:
+        resource.parent.mkdir(parents=True)
+        resource.write_bytes(b"local punkt")
+    find_calls: list[tuple[str, object]] = []
+
+    def find(resource_name: str, paths: object = None) -> str:
+        find_calls.append((resource_name, paths))
+        if resource_name == "tokenizers/punkt_tab/english.pickle" and paths == [str(root)] and resource.is_file():
+            return str(resource)
+        raise LookupError(resource_name)
+
+    def download(*_: object, **__: object) -> object:
+        raise AssertionError("test must not call the real NLTK download hook")
+
+    return (
+        SimpleNamespace(
+            data=SimpleNamespace(path=["/user/global/nltk"], find=find), download=download
+        ),
+        find_calls,
+    )
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -264,6 +289,9 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
     (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
     wav_path = tmp_path / "audio.wav"
     wav_path.write_bytes(b"fake wav")
+    nltk, find_calls = _fake_nltk(cache, has_punkt_tab=True)
+    original_nltk_path = list(nltk.data.path)
+    original_download = nltk.download
 
     class FakeWhisperX:
         segments: list[dict[str, object]] | None = None
@@ -282,6 +310,8 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
             return "audio"
 
         def align(self, segments: list[dict[str, object]], *_: object, **__: object) -> dict[str, object]:
+            assert nltk.data.path == [str(cache / "nltk_data")]
+            assert nltk.download is not original_download
             self.segments = segments
             return {
                 "segments": [
@@ -295,19 +325,114 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
             }
 
     whisperx = FakeWhisperX()
-    _patch_optional_packages(monkeypatch, {"whisperx": whisperx})
+    _patch_optional_packages(monkeypatch, {"whisperx": whisperx, "nltk": nltk})
 
     aligner = extractors.build_whisperx_aligner(cache)
     words = aligner.align(wav_path, "hello world", 1.0)
     repeated_words = aligner.align(wav_path, "hello world", 1.0)
 
     assert whisperx.load_count == 1
+    assert find_calls == [
+        ("tokenizers/punkt_tab/english.pickle", [str(cache / "nltk_data")])
+    ]
+    assert nltk.data.path == original_nltk_path
+    assert nltk.download is original_download
     assert whisperx.segments == [{"start": 0.0, "end": 1.0, "text": "hello world"}]
     assert words == (
         WordInterval("hello", 0.1, 0.4, 0, 5),
         WordInterval("world", 0.6, 0.9, 6, 11),
     )
     assert repeated_words == words
+
+
+def test_whisperx_factory_rejects_missing_local_punkt_tab_without_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "model_cache"
+    (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
+    nltk, find_calls = _fake_nltk(cache, has_punkt_tab=False)
+    download = nltk.download
+
+    class FakeWhisperX:
+        @staticmethod
+        def load_align_model(**_: object) -> tuple[object, object]:
+            return object(), object()
+
+    _patch_optional_packages(monkeypatch, {"whisperx": FakeWhisperX(), "nltk": nltk})
+
+    with pytest.raises(RuntimeError, match=r"punkt_tab.*model_cache.*downloads are disabled"):
+        extractors.build_whisperx_aligner(cache)
+
+    assert find_calls == [
+        ("tokenizers/punkt_tab/english.pickle", [str(cache / "nltk_data")]),
+        ("tokenizers/punkt_tab/english/", [str(cache / "nltk_data")]),
+    ]
+    assert nltk.download is download
+
+
+def test_whisperx_factory_reports_missing_nltk_as_local_punkt_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "model_cache"
+    (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
+
+    class FakeWhisperX:
+        @staticmethod
+        def load_align_model(**_: object) -> tuple[object, object]:
+            return object(), object()
+
+    original_import_module = extractors.importlib.import_module
+
+    def import_without_nltk(name: str, package: object = None) -> object:
+        if name == "whisperx":
+            return FakeWhisperX()
+        if name == "nltk":
+            raise ModuleNotFoundError("No module named nltk", name="nltk")
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(extractors.importlib, "import_module", import_without_nltk)
+
+    with pytest.raises(RuntimeError, match=r"punkt_tab.*model_cache.*downloads are disabled"):
+        extractors.build_whisperx_aligner(cache)
+
+
+def test_whisperx_aligner_blocks_upstream_download_and_restores_nltk_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "models"
+    (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
+    wav_path = tmp_path / "audio.wav"
+    wav_path.write_bytes(b"fake wav")
+    nltk, _ = _fake_nltk(cache, has_punkt_tab=True)
+    original_nltk_path = list(nltk.data.path)
+    original_download = nltk.download
+    download_attempts: list[str] = []
+
+    class DownloadingWhisperX:
+        @staticmethod
+        def load_align_model(**_: object) -> tuple[object, object]:
+            return object(), object()
+
+        @staticmethod
+        def load_audio(path: str) -> str:
+            assert path == str(wav_path)
+            return "audio"
+
+        def align(self, *_: object, **__: object) -> object:
+            download_attempts.append("attempted")
+            return nltk.download("punkt_tab")
+
+    _patch_optional_packages(
+        monkeypatch, {"whisperx": DownloadingWhisperX(), "nltk": nltk}
+    )
+    aligner = extractors.build_whisperx_aligner(cache)
+
+    with pytest.raises(RuntimeError, match=r"attempted.*punkt_tab.*downloads are disabled"):
+        aligner.align(wav_path, "hello", 1.0)
+
+    assert download_attempts == ["attempted"]
+    assert nltk.data.path == original_nltk_path
+    assert nltk.download is original_download
 
 
 @pytest.mark.parametrize("error_type", [OSError, RuntimeError])
@@ -322,7 +447,10 @@ def test_whisperx_factory_reports_local_alignment_model_load_failure(
         def load_align_model(**_: object) -> object:
             raise error_type("missing local alignment snapshot")
 
-    _patch_optional_packages(monkeypatch, {"whisperx": FailingWhisperX()})
+    nltk, _ = _fake_nltk(cache, has_punkt_tab=True)
+    _patch_optional_packages(
+        monkeypatch, {"whisperx": FailingWhisperX(), "nltk": nltk}
+    )
 
     with pytest.raises(RuntimeError, match="WhisperX.*facebook/wav2vec2-base-960h"):
         extractors.build_whisperx_aligner(cache)

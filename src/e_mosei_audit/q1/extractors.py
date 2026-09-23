@@ -11,6 +11,7 @@ import importlib
 import math
 import operator
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -177,6 +178,7 @@ def build_whisperx_aligner(model_cache: Path) -> WordAligner:
         "models--facebook--wav2vec2-base-960h",
         "wav2vec2-base-960h",
     )
+    nltk, nltk_data_root = _local_punkt_tab(cache)
     try:
         align_model, metadata = whisperx.load_align_model(
             language_code="en",
@@ -191,7 +193,7 @@ def build_whisperx_aligner(model_cache: Path) -> WordAligner:
             "'facebook/wav2vec2-base-960h' from model cache "
             f"{cache}; downloads are disabled"
         ) from error
-    return _WhisperXAligner(whisperx, align_model, metadata)
+    return _WhisperXAligner(whisperx, align_model, metadata, nltk, nltk_data_root)
 
 
 def build_bert_encoder(model_cache: Path) -> TextEncoder:
@@ -268,10 +270,19 @@ def build_mediapipe_extractor(model_cache: Path) -> VisionExtractor:
 
 
 class _WhisperXAligner:
-    def __init__(self, whisperx: Any, align_model: Any, metadata: Any) -> None:
+    def __init__(
+        self,
+        whisperx: Any,
+        align_model: Any,
+        metadata: Any,
+        nltk: Any,
+        nltk_data_root: Path,
+    ) -> None:
         self._whisperx = whisperx
         self._align_model = align_model
         self._metadata = metadata
+        self._nltk = nltk
+        self._nltk_data_root = nltk_data_root
 
     def align(
         self, wav_path: Path, transcript: str, duration: float
@@ -283,14 +294,15 @@ class _WhisperXAligner:
         if duration <= 0:
             raise ValueError("duration must be finite and positive")
         audio = self._whisperx.load_audio(str(wav_path))
-        aligned = self._whisperx.align(
-            [{"start": 0.0, "end": duration, "text": transcript}],
-            self._align_model,
-            self._metadata,
-            audio,
-            "cpu",
-            return_char_alignments=False,
-        )
+        with _nltk_alignment_guard(self._nltk, self._nltk_data_root):
+            aligned = self._whisperx.align(
+                [{"start": 0.0, "end": duration, "text": transcript}],
+                self._align_model,
+                self._metadata,
+                audio,
+                "cpu",
+                return_char_alignments=False,
+            )
         return _aligned_word_intervals(aligned, transcript)
 
 
@@ -492,6 +504,63 @@ def _cached_asset(model_cache: Path, expected: str, *candidates: str) -> Path:
         f"expected local asset '{expected}' in model cache {model_cache}; "
         "downloads are disabled"
     )
+
+
+def _local_punkt_tab(model_cache: Path) -> tuple[Any, Path]:
+    nltk_data_root = model_cache / "nltk_data"
+    try:
+        nltk = _optional_package("nltk")
+    except RuntimeError as error:
+        raise _punkt_tab_error(model_cache) from error
+
+    try:
+        _find_local_punkt_tab(nltk, nltk_data_root)
+    except (AttributeError, LookupError, OSError, TypeError, ValueError) as error:
+        raise _punkt_tab_error(model_cache) from error
+    return nltk, nltk_data_root
+
+
+def _find_local_punkt_tab(nltk: Any, nltk_data_root: Path) -> object:
+    find = nltk.data.find
+    paths = [str(nltk_data_root)]
+    resource = "tokenizers/punkt_tab/english.pickle"
+    try:
+        return find(resource, paths=paths)
+    except LookupError:
+        # Current NLTK releases resolve the PunktTab language directory directly.
+        return find("tokenizers/punkt_tab/english/", paths=paths)
+
+
+def _punkt_tab_error(model_cache: Path) -> RuntimeError:
+    return RuntimeError(
+        "WhisperX requires English punkt_tab in model_cache "
+        f"{model_cache / 'nltk_data'}; downloads are disabled"
+    )
+
+
+@contextmanager
+def _nltk_alignment_guard(nltk: Any, nltk_data_root: Path):
+    try:
+        paths = nltk.data.path
+        original_paths = list(paths)
+        original_download = nltk.download
+    except (AttributeError, TypeError) as error:
+        raise _punkt_tab_error(nltk_data_root.parent) from error
+
+    def blocked_download(*args: object, **kwargs: object) -> object:
+        requested = args[0] if args else kwargs.get("info_or_id", "unknown resource")
+        raise RuntimeError(
+            "WhisperX attempted an NLTK download for "
+            f"{requested!r}, including punkt_tab; downloads are disabled"
+        )
+
+    try:
+        paths[:] = [str(nltk_data_root)]
+        nltk.download = blocked_download
+        yield
+    finally:
+        paths[:] = original_paths
+        nltk.download = original_download
 
 
 def _wav_file(wav_path: object) -> Path:

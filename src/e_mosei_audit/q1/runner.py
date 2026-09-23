@@ -331,6 +331,7 @@ def _reproducibility_metadata(
                 "transformers",
                 "torch",
                 "whisperx",
+                "nltk",
                 "opensmile",
                 "mediapipe",
             )
@@ -339,6 +340,10 @@ def _reproducibility_metadata(
             "whisperx_alignment": {
                 "id": "facebook/wav2vec2-base-960h",
                 "local_cache": str(config.model_cache),
+            },
+            "nltk_punkt_tab": {
+                "id": "tokenizers/punkt_tab/english.pickle",
+                "local_cache": str(config.model_cache / "nltk_data"),
             },
             "bert": {"id": "bert-base-uncased", "local_cache": str(config.model_cache)},
             "mediapipe_face_landmarker": {

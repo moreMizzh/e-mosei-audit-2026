@@ -246,6 +246,11 @@ def test_run_q1_writes_success_and_failure_coverage_with_evidence(
     )
     assert manifest["reproducibility"]["parameters"]["slot_count"] == 50
     assert manifest["reproducibility"]["models"]["bert"]["id"] == "bert-base-uncased"
+    assert manifest["reproducibility"]["models"]["nltk_punkt_tab"] == {
+        "id": "tokenizers/punkt_tab/english.pickle",
+        "local_cache": str(config.model_cache / "nltk_data"),
+    }
+    assert isinstance(manifest["reproducibility"]["packages"]["nltk"], str)
     assert feature_contract["reproducibility"]["parameters"]["vision"]["fps"] == 10
     assert feature_contract["output_counts"] == summary
     table_rows = [
@@ -280,7 +285,7 @@ def test_run_q1_marks_noneligible_audit_row_failed_without_reading_archive(tmp_p
     ).read_text(encoding="utf-8")
 
 
-def test_run_q1_default_dependency_failure_does_not_create_output(
+def test_run_q1_default_missing_punkt_failure_does_not_create_output_or_read_members(
     monkeypatch, tmp_path: Path
 ) -> None:
     from e_mosei_audit.q1 import runner
@@ -292,10 +297,14 @@ def test_run_q1_default_dependency_failure_does_not_create_output(
     monkeypatch.setattr(
         runner,
         "build_whisperx_aligner",
-        lambda model_cache: (_ for _ in ()).throw(RuntimeError("missing WhisperX")),
+        lambda model_cache: (_ for _ in ()).throw(
+            RuntimeError(
+                f"punkt_tab missing in model_cache {model_cache}; downloads are disabled"
+            )
+        ),
     )
 
-    with pytest.raises(RuntimeError, match="missing WhisperX"):
+    with pytest.raises(RuntimeError, match="punkt_tab.*downloads are disabled"):
         runner.run_q1(config, archive=archive, limit=1)
 
     assert not config.output_dir.exists()
