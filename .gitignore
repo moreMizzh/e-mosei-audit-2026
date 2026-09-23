@@ -1,5 +1,6 @@
 .venv/
 .tools/
+q1.toml
 .pytest_cache/
 __pycache__/
 *.py[cod]

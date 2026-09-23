@@ -108,26 +108,29 @@ def run_q1(
     log_lines = ["Q1 extraction run"]
     first_success: dict[str, object] | None = None
 
-    with TemporaryDirectory(dir=config.output_dir) as temporary_directory:
-        work_root = Path(temporary_directory)
-        for row in selected_rows:
-            coverage, successful_evidence = _extract_audited_row(
-                row,
-                archive=active_archive,
-                member_paths=member_paths,
-                extractors=active_extractors,
-                config=config,
-                work_root=work_root,
-            )
-            coverage_rows.append(coverage)
-            if coverage["status"] == "success":
-                log_lines.append(f"{coverage['sample_id']}: success")
-                if first_success is None:
-                    first_success = successful_evidence
-            else:
-                log_lines.append(
-                    f"{coverage['sample_id']}: failed: {coverage['failure_reason']}"
+    try:
+        with TemporaryDirectory(dir=config.output_dir) as temporary_directory:
+            work_root = Path(temporary_directory)
+            for row in selected_rows:
+                coverage, successful_evidence = _extract_audited_row(
+                    row,
+                    archive=active_archive,
+                    member_paths=member_paths,
+                    extractors=active_extractors,
+                    config=config,
+                    work_root=work_root,
                 )
+                coverage_rows.append(coverage)
+                if coverage["status"] == "success":
+                    log_lines.append(f"{coverage['sample_id']}: success")
+                    if first_success is None:
+                        first_success = successful_evidence
+                else:
+                    log_lines.append(
+                        f"{coverage['sample_id']}: failed: {coverage['failure_reason']}"
+                    )
+    finally:
+        _close_vision_extractor(active_extractors.vision)
 
     counts = write_coverage(
         config.output_dir / "q1_samples.csv",
@@ -437,6 +440,12 @@ def _build_default_extractors(config: Q1Config) -> Q1Extractors:
     )
 
 
+def _close_vision_extractor(vision: VisionExtractor) -> None:
+    close = getattr(vision, "close", None)
+    if callable(close):
+        close()
+
+
 def _extract_audited_row(
     row: Mapping[str, str],
     *,
@@ -655,18 +664,19 @@ def _text_interval_records(
     records: list[dict[str, object]] = []
     for interval in intervals:
         _validate_transcript_span(transcript, interval)
-        records.append(
-            {
-                key: transcript[interval.char_start : interval.char_end],
-                "char_start": interval.char_start,
-                "char_end": interval.char_end,
-                "start": interval.start,
-                "end": interval.end,
-                "overlap_slot_indexes": _overlap_slot_indexes(
-                    interval.start, interval.end, slots
-                ),
-            }
-        )
+        record: dict[str, object] = {
+            key: transcript[interval.char_start : interval.char_end],
+            "char_start": interval.char_start,
+            "char_end": interval.char_end,
+            "start": interval.start,
+            "end": interval.end,
+            "overlap_slot_indexes": _overlap_slot_indexes(
+                interval.start, interval.end, slots
+            ),
+        }
+        if key == "word" and interval.aligned_text is not None:
+            record["aligned_text"] = interval.aligned_text
+        records.append(record)
     return records
 
 

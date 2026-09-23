@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import math
 import operator
+import re
 import stat
 import wave
 from collections.abc import Mapping, Sequence
@@ -38,6 +39,7 @@ class WordInterval:
     end: float
     char_start: int
     char_end: int
+    aligned_text: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.word, str) or not self.word.strip():
@@ -50,6 +52,10 @@ class WordInterval:
         char_end = _character_offset(self.char_end, "char_end")
         if char_end < char_start:
             raise ValueError("word character span must be ordered")
+        if self.aligned_text is not None and (
+            not isinstance(self.aligned_text, str) or not self.aligned_text.strip()
+        ):
+            raise ValueError("aligned_text must be a non-empty string when supplied")
         object.__setattr__(self, "start", start)
         object.__setattr__(self, "end", end)
         object.__setattr__(self, "char_start", char_start)
@@ -82,6 +88,8 @@ class VisionExtractor(Protocol):
     """Return unpooled detected-face frames with their physical start and end times."""
 
     def extract(self, frame_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]: ...
+
+    def close(self) -> None: ...
 
 
 def text_slot_features(
@@ -181,17 +189,32 @@ def build_whisperx_aligner(model_cache: Path) -> WordAligner:
         "wav2vec2-base-960h",
     )
     nltk, nltk_data_root = _local_punkt_tab(cache)
+    transformers = _optional_package("transformers")
     try:
-        align_model, metadata = whisperx.load_align_model(
-            language_code="en",
-            device="cpu",
-            model_name="facebook/wav2vec2-base-960h",
-            model_dir=str(cache),
-            model_cache_only=True,
+        processor = transformers.Wav2Vec2Processor.from_pretrained(
+            "facebook/wav2vec2-base-960h",
+            cache_dir=str(cache),
+            local_files_only=True,
         )
-    except (OSError, RuntimeError, ValueError) as error:
+        align_model = transformers.Wav2Vec2ForCTC.from_pretrained(
+            "facebook/wav2vec2-base-960h",
+            cache_dir=str(cache),
+            local_files_only=True,
+        )
+        align_model = align_model.to("cpu")
+        align_model.eval()
+        metadata = {
+            "language": "en",
+            "dictionary": {
+                character.lower(): code
+                for character, code in processor.tokenizer.get_vocab().items()
+            },
+            "type": "huggingface",
+        }
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as error:
         raise RuntimeError(
-            "WhisperX could not load expected local alignment asset "
+            "WhisperX could not load expected local alignment asset through "
+            "Transformers "
             "'facebook/wav2vec2-base-960h' from model cache "
             f"{cache}; downloads are disabled"
         ) from error
@@ -296,8 +319,20 @@ class _WhisperXAligner:
         if duration <= 0:
             raise ValueError("duration must be finite and positive")
         audio = _decoded_wav_audio(wav_path)
+        aligned = self._run_alignment(audio, transcript, duration)
+        try:
+            return _aligned_word_intervals(aligned, transcript)
+        except RuntimeError as error:
+            if str(error) != "WhisperX alignment returned a word without timestamps":
+                raise
+
+        fallback = _normalized_alignment_plan(transcript)
+        aligned = self._run_alignment(audio, fallback.text, duration)
+        return _normalized_word_intervals(aligned, transcript, fallback)
+
+    def _run_alignment(self, audio: np.ndarray, transcript: str, duration: float) -> object:
         with _nltk_alignment_guard(self._nltk, self._nltk_data_root):
-            aligned = self._whisperx.align(
+            return self._whisperx.align(
                 [{"start": 0.0, "end": duration, "text": transcript}],
                 self._align_model,
                 self._metadata,
@@ -305,7 +340,6 @@ class _WhisperXAligner:
                 "cpu",
                 return_char_alignments=False,
             )
-        return _aligned_word_intervals(aligned, transcript)
 
 
 class _BertEncoder:
@@ -395,6 +429,9 @@ class _MediaPipeExtractor:
             np.asarray(starts, dtype=np.float64),
             np.asarray(ends, dtype=np.float64),
         )
+
+    def close(self) -> None:
+        self._landmarker.close()
 
 
 def _finite_time(value: object, name: str) -> float:
@@ -638,13 +675,214 @@ def _declared_wav_data_size(stream: Any) -> int:
 
 
 def _aligned_word_intervals(aligned: object, transcript: str) -> tuple[WordInterval, ...]:
+    word_rows = _timestamped_words(aligned)
+    result: list[WordInterval] = []
+    cursor = 0
+    for word, start, end in word_rows:
+        char_start, char_end = _transcript_span(transcript, word, cursor)
+        cursor = char_end
+        result.append(
+            WordInterval(
+                word=word,
+                start=start,
+                end=end,
+                char_start=char_start,
+                char_end=char_end,
+            )
+        )
+    return tuple(result)
+
+
+@dataclass(frozen=True)
+class _AlignmentSpan:
+    char_start: int
+    char_end: int
+    alignment_words: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _NormalizedAlignment:
+    text: str
+    spans: tuple[_AlignmentSpan, ...]
+
+
+def _normalized_alignment_plan(transcript: str) -> _NormalizedAlignment:
+    spans: list[_AlignmentSpan] = []
+    pending_start: int | None = None
+    for match in re.finditer(r"\S+", transcript):
+        words = _alignment_words(match.group())
+        if not words:
+            if spans:
+                previous = spans[-1]
+                spans[-1] = _AlignmentSpan(
+                    char_start=previous.char_start,
+                    char_end=match.end(),
+                    alignment_words=previous.alignment_words,
+                )
+            elif pending_start is None:
+                pending_start = match.start()
+            continue
+        spans.append(
+            _AlignmentSpan(
+                char_start=pending_start if pending_start is not None else match.start(),
+                char_end=match.end(),
+                alignment_words=words,
+            )
+        )
+        pending_start = None
+    if not spans:
+        raise RuntimeError("WhisperX alignment normalization removed all spoken text")
+    return _NormalizedAlignment(
+        text=" ".join(word for span in spans for word in span.alignment_words),
+        spans=tuple(spans),
+    )
+
+
+def _alignment_words(source: str) -> tuple[str, ...]:
+    normalized = source.translate(
+        str.maketrans(
+            {
+                "‘": "'",
+                "’": "'",
+                "–": " ",
+                "—": " ",
+                "“": " ",
+                "”": " ",
+                "…": " ",
+            }
+        )
+    )
+    numeric = re.fullmatch(
+        r"([0-9][0-9,]*)(st|nd|rd|th)?[.,;:!?]*", normalized, flags=re.IGNORECASE
+    )
+    if numeric:
+        value = int(numeric.group(1).replace(",", ""))
+        words = _cardinal_words(value)
+        if numeric.group(2):
+            words = _ordinal_words(words)
+        return words
+    return tuple(re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", normalized))
+
+
+def _cardinal_words(value: int) -> tuple[str, ...]:
+    if value < 0 or value >= 1_000_000_000:
+        raise RuntimeError("WhisperX alignment normalization supports numbers below one billion")
+    if value < 1_000:
+        return _under_one_thousand_words(value)
+    result: list[str] = []
+    for divisor, magnitude in ((1_000_000, "million"), (1_000, "thousand")):
+        group, value = divmod(value, divisor)
+        if group:
+            result.extend(_under_one_thousand_words(group))
+            result.append(magnitude)
+    if value:
+        result.extend(_under_one_thousand_words(value))
+    return tuple(result)
+
+
+def _under_one_thousand_words(value: int) -> tuple[str, ...]:
+    ones = (
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+    )
+    teens = (
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+    )
+    tens = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+    result: list[str] = []
+    if value >= 100:
+        result.extend((ones[value // 100], "hundred"))
+        value %= 100
+    if value >= 20:
+        result.append(tens[value // 10])
+        value %= 10
+    if value >= 10:
+        result.append(teens[value - 10])
+        value = 0
+    if value:
+        result.append(ones[value])
+    return tuple(result or ["zero"])
+
+
+def _ordinal_words(words: tuple[str, ...]) -> tuple[str, ...]:
+    replacement = {
+        "one": "first",
+        "two": "second",
+        "three": "third",
+        "four": "fourth",
+        "five": "fifth",
+        "six": "sixth",
+        "seven": "seventh",
+        "eight": "eighth",
+        "nine": "ninth",
+        "ten": "tenth",
+        "eleven": "eleventh",
+        "twelve": "twelfth",
+    }
+    final = replacement.get(words[-1])
+    if final is None:
+        final = f"{words[-1][:-1]}ieth" if words[-1].endswith("y") else f"{words[-1]}th"
+    return (*words[:-1], final)
+
+
+def _normalized_word_intervals(
+    aligned: object, transcript: str, plan: _NormalizedAlignment
+) -> tuple[WordInterval, ...]:
+    word_rows = _timestamped_words(aligned)
+    expected = tuple(word for span in plan.spans for word in span.alignment_words)
+    actual = tuple(word.strip() for word, _, _ in word_rows)
+    if len(actual) != len(expected) or any(
+        observed.casefold() != wanted.casefold()
+        for observed, wanted in zip(actual, expected, strict=True)
+    ):
+        raise RuntimeError(
+            "WhisperX normalized alignment words do not match the normalized transcript"
+        )
+
+    result: list[WordInterval] = []
+    cursor = 0
+    for span in plan.spans:
+        rows = word_rows[cursor : cursor + len(span.alignment_words)]
+        cursor += len(span.alignment_words)
+        source_text = transcript[span.char_start : span.char_end]
+        aligned_text = " ".join(span.alignment_words)
+        result.append(
+            WordInterval(
+                word=source_text,
+                start=min(start for _, start, _ in rows),
+                end=max(end for _, _, end in rows),
+                char_start=span.char_start,
+                char_end=span.char_end,
+                aligned_text=aligned_text if aligned_text != source_text else None,
+            )
+        )
+    return tuple(result)
+
+
+def _timestamped_words(aligned: object) -> tuple[tuple[str, object, object], ...]:
     if not isinstance(aligned, Mapping):
         raise RuntimeError("WhisperX alignment returned no aligned word timestamps")
     segments = aligned.get("segments")
     if not isinstance(segments, Sequence):
         raise RuntimeError("WhisperX alignment returned no aligned word timestamps")
-    result: list[WordInterval] = []
-    cursor = 0
+    result: list[tuple[str, object, object]] = []
     for segment in segments:
         if not isinstance(segment, Mapping):
             continue
@@ -657,17 +895,7 @@ def _aligned_word_intervals(aligned: object, transcript: str) -> tuple[WordInter
             word = word_data.get("word")
             if not isinstance(word, str) or "start" not in word_data or "end" not in word_data:
                 raise RuntimeError("WhisperX alignment returned a word without timestamps")
-            char_start, char_end = _transcript_span(transcript, word, cursor)
-            cursor = char_end
-            result.append(
-                WordInterval(
-                    word=word,
-                    start=word_data["start"],
-                    end=word_data["end"],
-                    char_start=char_start,
-                    char_end=char_end,
-                )
-            )
+            result.append((word, word_data["start"], word_data["end"]))
     if not result:
         raise RuntimeError("WhisperX alignment returned no aligned word timestamps")
     return tuple(result)
@@ -735,10 +963,16 @@ def _opensmile_timestamps(index: object) -> tuple[np.ndarray, np.ndarray]:
     starts: list[float] = []
     ends: list[float] = []
     for entry in entries:
-        if not isinstance(entry, tuple) or len(entry) < 2:
+        if not isinstance(entry, tuple):
             raise RuntimeError("OpenSMILE output must index each window by start and end")
-        starts.append(_seconds(entry[0]))
-        ends.append(_seconds(entry[1]))
+        if len(entry) == 2:
+            start, end = entry
+        elif len(entry) == 3:
+            _, start, end = entry
+        else:
+            raise RuntimeError("OpenSMILE output must index each window by start and end")
+        starts.append(_seconds(start))
+        ends.append(_seconds(end))
     return np.asarray(starts), np.asarray(ends)
 
 

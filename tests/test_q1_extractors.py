@@ -322,7 +322,7 @@ def test_bert_factory_maps_768_dimensional_tokens_to_supplied_word_intervals(
     assert all(call["local_files_only"] is True for call in calls)
 
 
-def test_whisperx_factory_aligns_the_original_supplied_transcript(
+def test_whisperx_factory_builds_a_local_alignment_model_and_aligns_the_supplied_transcript(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cache = tmp_path / "models"
@@ -336,13 +336,9 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
     class FakeWhisperX:
         segments: list[dict[str, object]] | None = None
 
-        def __init__(self) -> None:
-            self.load_count = 0
-
-        def load_align_model(self, **kwargs: object) -> tuple[object, object]:
-            assert kwargs["model_cache_only"] is True
-            self.load_count += 1
-            return object(), object()
+        @staticmethod
+        def load_align_model(**_: object) -> object:
+            raise AssertionError("factory must load local weights through Transformers")
 
         @staticmethod
         def load_audio(*_: object, **__: object) -> object:
@@ -351,12 +347,18 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
         def align(
             self,
             segments: list[dict[str, object]],
-            _: object,
-            __: object,
+            model: object,
+            metadata: object,
             audio: np.ndarray,
             ___: str,
             **____: object,
         ) -> dict[str, object]:
+            assert model is align_model
+            assert metadata == {
+                "language": "en",
+                "dictionary": {"a": 0, "|": 1},
+                "type": "huggingface",
+            }
             assert nltk.data.path == [str(cache / "nltk_data")]
             assert nltk.download is not original_download
             assert audio.dtype == np.float32
@@ -378,14 +380,54 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
                 ]
             }
 
+    factory_calls: list[dict[str, object]] = []
+
+    class Processor:
+        tokenizer = SimpleNamespace(get_vocab=lambda: {"a": 0, "|": 1})
+
+    class AlignmentModel:
+        def __init__(self) -> None:
+            self.devices: list[str] = []
+            self.eval_count = 0
+
+        def to(self, device: str) -> "AlignmentModel":
+            self.devices.append(device)
+            return self
+
+        def eval(self) -> None:
+            self.eval_count += 1
+
+    align_model = AlignmentModel()
+
+    class Wav2Vec2Processor:
+        @staticmethod
+        def from_pretrained(_: str, **kwargs: object) -> Processor:
+            factory_calls.append(dict(kwargs))
+            return Processor()
+
+    class Wav2Vec2ForCTC:
+        @staticmethod
+        def from_pretrained(_: str, **kwargs: object) -> AlignmentModel:
+            factory_calls.append(dict(kwargs))
+            return align_model
+
     whisperx = FakeWhisperX()
-    _patch_optional_packages(monkeypatch, {"whisperx": whisperx, "nltk": nltk})
+    transformers = SimpleNamespace(
+        Wav2Vec2Processor=Wav2Vec2Processor,
+        Wav2Vec2ForCTC=Wav2Vec2ForCTC,
+    )
+    _patch_optional_packages(
+        monkeypatch,
+        {"whisperx": whisperx, "nltk": nltk, "transformers": transformers},
+    )
 
     aligner = extractors.build_whisperx_aligner(cache)
     words = aligner.align(wav_path, "hello world", 1.0)
     repeated_words = aligner.align(wav_path, "hello world", 1.0)
 
-    assert whisperx.load_count == 1
+    assert all(call["local_files_only"] is True for call in factory_calls)
+    assert align_model.devices == ["cpu"]
+    assert align_model.eval_count == 1
     assert find_calls == [
         ("tokenizers/punkt_tab/english.pickle", [str(cache / "nltk_data")])
     ]
@@ -397,6 +439,63 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
         WordInterval("world", 0.6, 0.9, 6, 11),
     )
     assert repeated_words == words
+
+
+def test_whisperx_aligner_falls_back_to_spoken_numbers_and_preserves_original_spans(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "models"
+    nltk, _ = _fake_nltk(cache, has_punkt_tab=True)
+    wav_path = tmp_path / "audio.wav"
+    _write_pcm_wav(wav_path)
+    transcript = "In 2008, there."
+    calls: list[str] = []
+
+    class FakeWhisperX:
+        def align(self, segments: list[dict[str, object]], *_: object, **__: object) -> object:
+            text = str(segments[0]["text"])
+            calls.append(text)
+            if text == transcript:
+                return {
+                    "segments": [
+                        {
+                            "words": [
+                                {"word": "In", "start": 0.0, "end": 0.1},
+                                {"word": "2008,"},
+                                {"word": "there.", "start": 0.6, "end": 0.8},
+                            ]
+                        }
+                    ]
+                }
+            assert text == "In two thousand eight there"
+            return {
+                "segments": [
+                    {
+                        "words": [
+                            {"word": "In", "start": 0.0, "end": 0.1},
+                            {"word": "two", "start": 0.1, "end": 0.2},
+                            {"word": "thousand", "start": 0.2, "end": 0.4},
+                            {"word": "eight", "start": 0.4, "end": 0.6},
+                            {"word": "there", "start": 0.6, "end": 0.8},
+                        ]
+                    }
+                ]
+            }
+
+    aligner = extractors._WhisperXAligner(
+        FakeWhisperX(), object(), object(), nltk, cache / "nltk_data"
+    )
+
+    words = aligner.align(wav_path, transcript, 1.0)
+
+    assert calls == [transcript, "In two thousand eight there"]
+    assert words == (
+        WordInterval("In", 0.0, 0.1, 0, 2),
+        WordInterval("2008,", 0.1, 0.6, 3, 8, "two thousand eight"),
+        WordInterval("there.", 0.6, 0.8, 9, 15, "there"),
+    )
+    assert extractors._token_interval(transcript, (3, 7), words).start == 0.1
+    assert extractors._token_interval(transcript, (7, 8), words).end == 0.6
 
 
 @pytest.mark.parametrize(
@@ -603,14 +702,26 @@ def test_whisperx_factory_reports_local_alignment_model_load_failure(
     cache = tmp_path / "models"
     (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
 
-    class FailingWhisperX:
+    class FakeWhisperX:
         @staticmethod
         def load_align_model(**_: object) -> object:
+            raise AssertionError("factory must load local weights through Transformers")
+
+    class FailingProcessor:
+        @staticmethod
+        def from_pretrained(*_: object, **__: object) -> object:
             raise error_type("missing local alignment snapshot")
+
+    failing_transformers = SimpleNamespace(Wav2Vec2Processor=FailingProcessor)
 
     nltk, _ = _fake_nltk(cache, has_punkt_tab=True)
     _patch_optional_packages(
-        monkeypatch, {"whisperx": FailingWhisperX(), "nltk": nltk}
+        monkeypatch,
+        {
+            "whisperx": FakeWhisperX(),
+            "nltk": nltk,
+            "transformers": failing_transformers,
+        },
     )
 
     with pytest.raises(RuntimeError, match="WhisperX.*facebook/wav2vec2-base-960h"):
@@ -655,6 +766,20 @@ def test_opensmile_factory_requests_lld_and_returns_25_dimensional_windows(
     assert values.shape == (2, 25)
     assert starts.tolist() == [0.0, 0.01]
     assert ends.tolist() == [0.025, 0.035]
+
+
+def test_opensmile_timestamps_ignores_the_file_level_in_real_multi_index_rows() -> None:
+    from datetime import timedelta
+
+    starts, ends = extractors._opensmile_timestamps(
+        [
+            ("/tmp/audio.wav", timedelta(seconds=0.0), timedelta(seconds=0.02)),
+            ("/tmp/audio.wav", timedelta(seconds=0.01), timedelta(seconds=0.03)),
+        ]
+    )
+
+    assert starts.tolist() == [0.0, 0.01]
+    assert ends.tolist() == [0.02, 0.03]
 
 
 def test_mediapipe_factory_returns_exactly_empty_56_dimensional_frames_without_faces(
@@ -777,6 +902,8 @@ def test_model_factories_report_missing_expected_local_assets(
 def _patch_optional_packages(
     monkeypatch: pytest.MonkeyPatch, packages: dict[str, object]
 ) -> None:
+    if "whisperx" in packages and "transformers" not in packages:
+        packages = {**packages, "transformers": _fake_wav2vec2_transformers()}
     original_import_module = extractors.importlib.import_module
 
     def import_fake_package(name: str, package: object = None) -> object:
@@ -785,3 +912,30 @@ def _patch_optional_packages(
         return original_import_module(name, package)
 
     monkeypatch.setattr(extractors.importlib, "import_module", import_fake_package)
+
+
+def _fake_wav2vec2_transformers() -> object:
+    class Processor:
+        tokenizer = SimpleNamespace(get_vocab=lambda: {"a": 0})
+
+    class Model:
+        def to(self, _: str) -> "Model":
+            return self
+
+        def eval(self) -> None:
+            return None
+
+    class Wav2Vec2Processor:
+        @staticmethod
+        def from_pretrained(*_: object, **__: object) -> Processor:
+            return Processor()
+
+    class Wav2Vec2ForCTC:
+        @staticmethod
+        def from_pretrained(*_: object, **__: object) -> Model:
+            return Model()
+
+    return SimpleNamespace(
+        Wav2Vec2Processor=Wav2Vec2Processor,
+        Wav2Vec2ForCTC=Wav2Vec2ForCTC,
+    )

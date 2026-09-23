@@ -64,10 +64,16 @@ class _Audio:
 
 
 class _Vision:
+    def __init__(self) -> None:
+        self.close_count = 0
+
     def extract(self, frame_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         values = np.zeros((1, 56), dtype=np.float32)
         values[0, -1] = 1.0
         return values, np.asarray([0.0]), np.asarray([1.0])
+
+    def close(self) -> None:
+        self.close_count += 1
 
 
 def _config(tmp_path: Path) -> Q1Config:
@@ -183,7 +189,8 @@ def test_run_q1_writes_success_and_failure_coverage_with_evidence(
     failed_member = str(rows[1]["member_path"])
     archive = _archive_for(rows, failed_member=failed_member)
 
-    summary = run_q1(config, archive=archive, extractors=_extractors(), limit=2)
+    extractors = _extractors()
+    summary = run_q1(config, archive=archive, extractors=extractors, limit=2)
 
     with (config.output_dir / "q1_samples.csv").open(encoding="utf-8", newline="") as stream:
         coverage = list(csv.DictReader(stream))
@@ -263,6 +270,24 @@ def test_run_q1_writes_success_and_failure_coverage_with_evidence(
     assert archive.verify_count == 1
     assert archive.list_count == 1
     assert archive.read_calls == [str(row["member_path"]) for row in rows]
+    assert extractors.vision.close_count == 1
+
+
+def test_word_evidence_records_alignment_normalization_only_when_used() -> None:
+    from e_mosei_audit.q1 import runner
+
+    records = runner._text_interval_records(
+        "In 2008,",
+        (
+            WordInterval("In", 0.0, 0.1, 0, 2),
+            WordInterval("2008,", 0.1, 0.6, 3, 8, "two thousand eight"),
+        ),
+        np.asarray([[0.0, 1.0]]),
+        key="word",
+    )
+
+    assert "aligned_text" not in records[0]
+    assert records[1]["aligned_text"] == "two thousand eight"
 
 
 def test_run_q1_marks_noneligible_audit_row_failed_without_reading_archive(tmp_path: Path) -> None:
