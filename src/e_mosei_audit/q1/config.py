@@ -53,7 +53,7 @@ def load_config(path: Path) -> Q1Config:
     _require_file(resolved_paths["seven_zip"], "seven_zip")
     _require_file(resolved_paths["ffmpeg"], "ffmpeg")
     _require_directory(resolved_paths["model_cache"], "model_cache")
-    _require_directory(resolved_paths["output_dir"].parent, "output_dir")
+    _require_directory(resolved_paths["output_dir"].parent, "output_dir parent")
 
     return Q1Config(**resolved_paths)
 
