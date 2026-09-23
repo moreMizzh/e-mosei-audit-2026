@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,6 +34,29 @@ def _fake_nltk(cache: Path, *, has_punkt_tab: bool) -> tuple[SimpleNamespace, li
         ),
         find_calls,
     )
+
+
+def _write_pcm_wav(
+    path: Path,
+    *,
+    channels: int = 1,
+    sample_rate: int = 16000,
+    sample_width: int = 2,
+    samples: tuple[int, ...] = (-32768, -16384, 0, 16384, 32767),
+) -> None:
+    """Create a small PCM WAV with only Python's standard library."""
+
+    assert len(samples) % channels == 0
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(channels)
+        stream.setsampwidth(sample_width)
+        stream.setframerate(sample_rate)
+        if sample_width == 2:
+            stream.writeframes(
+                b"".join(sample.to_bytes(2, "little", signed=True) for sample in samples)
+            )
+        else:
+            stream.writeframes(b"\0" * (len(samples) * sample_width))
 
 
 @pytest.mark.parametrize(
@@ -288,7 +312,7 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
     cache = tmp_path / "models"
     (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
     wav_path = tmp_path / "audio.wav"
-    wav_path.write_bytes(b"fake wav")
+    _write_pcm_wav(wav_path)
     nltk, find_calls = _fake_nltk(cache, has_punkt_tab=True)
     original_nltk_path = list(nltk.data.path)
     original_download = nltk.download
@@ -305,13 +329,27 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
             return object(), object()
 
         @staticmethod
-        def load_audio(path: str) -> str:
-            assert path == str(wav_path)
-            return "audio"
+        def load_audio(*_: object, **__: object) -> object:
+            raise AssertionError("Q1 must not call whisperx.load_audio")
 
-        def align(self, segments: list[dict[str, object]], *_: object, **__: object) -> dict[str, object]:
+        def align(
+            self,
+            segments: list[dict[str, object]],
+            _: object,
+            __: object,
+            audio: np.ndarray,
+            ___: str,
+            **____: object,
+        ) -> dict[str, object]:
             assert nltk.data.path == [str(cache / "nltk_data")]
             assert nltk.download is not original_download
+            assert audio.dtype == np.float32
+            assert audio.ndim == 1
+            assert np.all(np.isfinite(audio))
+            np.testing.assert_allclose(
+                audio,
+                np.asarray([-1.0, -0.5, 0.0, 0.5, 32767.0 / 32768.0], dtype=np.float32),
+            )
             self.segments = segments
             return {
                 "segments": [
@@ -343,6 +381,82 @@ def test_whisperx_factory_aligns_the_original_supplied_transcript(
         WordInterval("world", 0.6, 0.9, 6, 11),
     )
     assert repeated_words == words
+
+
+@pytest.mark.parametrize(
+    ("label", "writer_kwargs"),
+    [
+        ("sample rate", {"sample_rate": 8000}),
+        ("channels", {"channels": 2, "samples": (-32768, -16384, 0, 16384)}),
+        ("sample width", {"sample_width": 1}),
+    ],
+)
+def test_whisperx_aligner_rejects_incompatible_decoded_wav_before_alignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    writer_kwargs: dict[str, object],
+) -> None:
+    cache = tmp_path / "models"
+    (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
+    wav_path = tmp_path / "audio.wav"
+    _write_pcm_wav(wav_path, **writer_kwargs)
+    nltk, _ = _fake_nltk(cache, has_punkt_tab=True)
+    alignment_attempts: list[object] = []
+
+    class FakeWhisperX:
+        @staticmethod
+        def load_align_model(**_: object) -> tuple[object, object]:
+            return object(), object()
+
+        @staticmethod
+        def load_audio(*_: object, **__: object) -> object:
+            raise AssertionError("Q1 must not call whisperx.load_audio")
+
+        def align(self, *_: object, **__: object) -> object:
+            alignment_attempts.append(object())
+            raise AssertionError("incompatible decoded WAV must fail before align")
+
+    _patch_optional_packages(monkeypatch, {"whisperx": FakeWhisperX(), "nltk": nltk})
+    aligner = extractors.build_whisperx_aligner(cache)
+
+    with pytest.raises(ValueError, match=r"decoded WAV.*16 kHz.*16-bit PCM"):
+        aligner.align(wav_path, "hello", 1.0)
+
+    assert label
+    assert alignment_attempts == []
+
+
+def test_whisperx_aligner_rejects_invalid_decoded_wav_before_alignment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "models"
+    (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
+    wav_path = tmp_path / "audio.wav"
+    wav_path.write_bytes(b"not a RIFF/WAVE file")
+    nltk, _ = _fake_nltk(cache, has_punkt_tab=True)
+    alignment_attempts: list[object] = []
+
+    class FakeWhisperX:
+        @staticmethod
+        def load_align_model(**_: object) -> tuple[object, object]:
+            return object(), object()
+
+        @staticmethod
+        def load_audio(*_: object, **__: object) -> object:
+            raise AssertionError("Q1 must not call whisperx.load_audio")
+
+        def align(self, *_: object, **__: object) -> object:
+            alignment_attempts.append(object())
+            raise AssertionError("invalid decoded WAV must fail before align")
+
+    _patch_optional_packages(monkeypatch, {"whisperx": FakeWhisperX(), "nltk": nltk})
+    aligner = extractors.build_whisperx_aligner(cache)
+
+    with pytest.raises(ValueError, match=r"decoded WAV.*16 kHz.*16-bit PCM"):
+        aligner.align(wav_path, "hello", 1.0)
+
+    assert alignment_attempts == []
 
 
 def test_whisperx_factory_rejects_missing_local_punkt_tab_without_download(
@@ -402,7 +516,7 @@ def test_whisperx_aligner_blocks_upstream_download_and_restores_nltk_state(
     cache = tmp_path / "models"
     (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
     wav_path = tmp_path / "audio.wav"
-    wav_path.write_bytes(b"fake wav")
+    _write_pcm_wav(wav_path)
     nltk, _ = _fake_nltk(cache, has_punkt_tab=True)
     original_nltk_path = list(nltk.data.path)
     original_download = nltk.download
@@ -414,9 +528,8 @@ def test_whisperx_aligner_blocks_upstream_download_and_restores_nltk_state(
             return object(), object()
 
         @staticmethod
-        def load_audio(path: str) -> str:
-            assert path == str(wav_path)
-            return "audio"
+        def load_audio(*_: object, **__: object) -> object:
+            raise AssertionError("Q1 must not call whisperx.load_audio")
 
         def align(self, *_: object, **__: object) -> object:
             download_attempts.append("attempted")

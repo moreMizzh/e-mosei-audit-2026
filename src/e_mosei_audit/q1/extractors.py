@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib
 import math
 import operator
+import stat
+import wave
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -293,7 +295,7 @@ class _WhisperXAligner:
         duration = _finite_time(duration, "duration")
         if duration <= 0:
             raise ValueError("duration must be finite and positive")
-        audio = self._whisperx.load_audio(str(wav_path))
+        audio = _decoded_wav_audio(wav_path)
         with _nltk_alignment_guard(self._nltk, self._nltk_data_root):
             aligned = self._whisperx.align(
                 [{"start": 0.0, "end": duration, "text": transcript}],
@@ -567,6 +569,55 @@ def _wav_file(wav_path: object) -> Path:
     if not isinstance(wav_path, Path) or not wav_path.is_file():
         raise ValueError(f"wav_path must be an existing file: {wav_path}")
     return wav_path
+
+
+def _decoded_wav_audio(wav_path: Path) -> np.ndarray:
+    """Read the configured FFmpeg WAV contract without delegating to WhisperX."""
+
+    try:
+        if (
+            not isinstance(wav_path, Path)
+            or not wav_path.is_file()
+            or not stat.S_ISREG(wav_path.stat().st_mode)
+        ):
+            raise ValueError(_decoded_wav_contract())
+        with wave.open(str(wav_path), "rb") as stream:
+            if (
+                stream.getcomptype() != "NONE"
+                or stream.getnchannels() != 1
+                or stream.getframerate() != 16000
+                or stream.getsampwidth() != 2
+                or stream.getnframes() <= 0
+            ):
+                raise ValueError(_decoded_wav_contract())
+            frame_count = stream.getnframes()
+            raw_audio = stream.readframes(frame_count)
+    except ValueError:
+        raise
+    except (EOFError, OSError, wave.Error) as error:
+        raise ValueError(_decoded_wav_contract()) from error
+
+    if len(raw_audio) != frame_count * 2:
+        raise ValueError(_decoded_wav_contract())
+    samples = np.frombuffer(raw_audio, dtype="<i2")
+    if samples.ndim != 1 or len(samples) != frame_count:
+        raise ValueError(_decoded_wav_contract())
+    audio = samples.astype(np.float32) / np.float32(32768.0)
+    if (
+        audio.dtype != np.float32
+        or not np.all(np.isfinite(audio))
+        or np.any(audio < -1.0)
+        or np.any(audio >= 1.0)
+    ):
+        raise ValueError(_decoded_wav_contract())
+    return audio
+
+
+def _decoded_wav_contract() -> str:
+    return (
+        "decoded WAV must be a readable RIFF/WAVE regular file with one channel, "
+        "16 kHz signed 16-bit PCM, and nonempty integral frames"
+    )
 
 
 def _aligned_word_intervals(aligned: object, transcript: str) -> tuple[WordInterval, ...]:
