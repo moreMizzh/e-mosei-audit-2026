@@ -1,0 +1,17 @@
+.venv/
+.tools/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Original competition materials are read-only inputs, never source files.
+E题数据*.zip
+E题数据*.z[0-9][0-9]
+*.docx
+*.docx:Zone.Identifier
+
+# Derived files and large model assets are intentionally untracked.
+artifacts/
+data/
+models/
+.worktrees/
