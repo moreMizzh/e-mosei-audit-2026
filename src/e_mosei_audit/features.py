@@ -31,6 +31,7 @@ def audit_feature_dataset(
             continue
         splits[split_name] = _audit_split(split, chunk_size)
     result["splits"] = splits
+    result["errors"] = errors
     return result
 
 
@@ -56,7 +57,7 @@ def _audit_split(split: Mapping[str, Any], chunk_size: int) -> dict[str, object]
         "length_fields": {
             name: _length_statistics(value)
             for name, value in split.items()
-            if "length" in name.lower() and isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.number)
+            if "length" in name.lower() and _numeric_vector(value) is not None
         },
     }
     labels = split.get("classification_labels")
@@ -161,11 +162,10 @@ def _zero_run_summary(
 
 
 def _normalise_lengths(value: Any, sample_count: int, maximum: int) -> np.ndarray | None:
-    if not isinstance(value, np.ndarray) or value.ndim != 1 or len(value) != sample_count:
+    lengths = _numeric_vector(value)
+    if lengths is None or len(lengths) != sample_count:
         return None
-    if not np.issubdtype(value.dtype, np.number):
-        return None
-    return np.clip(value.astype(np.int64, copy=False), 0, maximum)
+    return np.clip(lengths.astype(np.int64, copy=False), 0, maximum)
 
 
 def _leading_true_count(positions: np.ndarray) -> int:
@@ -184,8 +184,19 @@ def _longest_true_run(positions: np.ndarray) -> int:
     return longest
 
 
-def _length_statistics(values: np.ndarray) -> dict[str, int | float | None]:
-    flattened = np.asarray(values).reshape(-1)
+def _numeric_vector(value: Any) -> np.ndarray | None:
+    if not isinstance(value, (np.ndarray, list, tuple)):
+        return None
+    vector = np.asarray(value)
+    if vector.ndim != 1 or not np.issubdtype(vector.dtype, np.number):
+        return None
+    return vector
+
+
+def _length_statistics(values: Any) -> dict[str, int | float | None]:
+    flattened = _numeric_vector(values)
+    if flattened is None:
+        raise ValueError("length statistics require a one-dimensional numeric value")
     finite = flattened[np.isfinite(flattened)]
     if not len(finite):
         return {"min": None, "max": None, "mean": None}

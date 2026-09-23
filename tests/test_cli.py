@@ -37,3 +37,29 @@ def test_audit_command_passes_explicit_paths_to_workflow(monkeypatch, capsys, tm
         "archive_name": "data.zip",
     }
     assert '"raw_error_count": 0' in capsys.readouterr().out
+
+
+def test_audit_command_returns_nonzero_for_feature_contract_errors(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        cli,
+        "run_audit",
+        lambda *args, **kwargs: {
+            "raw_error_count": 0,
+            "feature_error_count": 1,
+            "special_error_count": 0,
+        },
+    )
+
+    status = cli.main(
+        [
+            "audit",
+            "--archive",
+            str(tmp_path / "data.zip"),
+            "--seven-zip",
+            str(tmp_path / "7za"),
+            "--output",
+            str(tmp_path / "output"),
+        ]
+    )
+
+    assert status == 1

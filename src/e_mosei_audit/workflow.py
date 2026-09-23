@@ -44,11 +44,14 @@ def run_audit(archive: ArchiveReader, output_dir: Path, *, archive_name: str) ->
     raw_result = audit_raw_mapping(file_members, label_rows, archive.read_bytes)
 
     feature_contracts: dict[str, object] = {}
+    feature_errors: list[str] = []
     for filename in ("aligned_50.pkl", "unaligned_50.pkl"):
         member = _single_member(file_members, filename)
         with archive.open_member(member.path) as stream:
             payload = pickle.load(stream)
-        feature_contracts[filename] = audit_feature_dataset(payload, source_name=filename)
+        feature_result = audit_feature_dataset(payload, source_name=filename)
+        feature_contracts[filename] = feature_result
+        feature_errors.extend(f"{filename}: {error}" for error in feature_result["errors"])
         del payload
 
     special_records: list[dict[str, object]] = []
@@ -97,11 +100,19 @@ def run_audit(archive: ArchiveReader, output_dir: Path, *, archive_name: str) ->
         "raw_error_count": len(raw_result.errors),
         "raw_warning_count": len(raw_result.warnings),
         "feature_sources": list(feature_contracts),
+        "feature_error_count": len(feature_errors),
         "special_record_count": len(special_records),
         "special_error_count": len(special_errors),
     }
     (output_dir / "audit_report.md").write_text(
-        _render_report(summary, raw_result.errors, raw_result.warnings, special_errors), encoding="utf-8"
+        _render_report(
+            summary,
+            raw_result.errors,
+            raw_result.warnings,
+            feature_errors,
+            special_errors,
+        ),
+        encoding="utf-8",
     )
     return summary
 
@@ -186,7 +197,11 @@ def _json_default(value: object) -> object:
 
 
 def _render_report(
-    summary: Mapping[str, object], raw_errors: list[str], raw_warnings: list[str], special_errors: list[str]
+    summary: Mapping[str, object],
+    raw_errors: list[str],
+    raw_warnings: list[str],
+    feature_errors: list[str],
+    special_errors: list[str],
 ) -> str:
     lines = [
         "# E 题数据审计报告",
@@ -196,6 +211,7 @@ def _render_report(
         f"- 附件 1 映射错误：{summary['raw_error_count']}",
         f"- 附件 1 时长警告：{summary['raw_warning_count']}",
         f"- 特征文件：{', '.join(summary['feature_sources'])}",
+        f"- 附件 2 特征错误：{summary['feature_error_count']}",
         f"- 专项样本记录：{summary['special_record_count']}",
         f"- 专项样本错误：{summary['special_error_count']}",
         "",
@@ -203,7 +219,12 @@ def _render_report(
         "",
         "专项样本中的连续全零位置仅记录为数值证据。除非同一文件提供独立长度或掩码字段，报告不会将其判定为赛题注入的模态缺失。",
     ]
-    for heading, messages in (("附件 1 错误", raw_errors), ("附件 1 警告", raw_warnings), ("专项样本错误", special_errors)):
+    for heading, messages in (
+        ("附件 1 错误", raw_errors),
+        ("附件 1 警告", raw_warnings),
+        ("附件 2 特征错误", feature_errors),
+        ("专项样本错误", special_errors),
+    ):
         if messages:
             lines.extend(["", f"## {heading}", ""])
             lines.extend(f"- {message}" for message in messages)

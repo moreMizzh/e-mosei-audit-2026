@@ -63,3 +63,19 @@ def test_reports_missing_extra_and_duplicate_label_keys() -> None:
         "label has no video: missing_02",
         "video has no label: extra_07",
     ]
+
+
+def test_reports_and_accounts_for_each_duplicate_unlabelled_video() -> None:
+    members = [
+        _member("E题数据/附件1-数据集原始多模态样本/videos/source-a/extra/07.mp4"),
+        _member("E题数据/附件1-数据集原始多模态样本/videos/source-b/extra/07.mp4"),
+    ]
+
+    result = audit_raw_mapping(members, [], lambda _: _video())
+
+    assert result.errors == ["duplicate video key: extra_07", "video has no label: extra_07"]
+    assert [record["mapping_status"] for record in result.records] == [
+        "duplicate_extra_video",
+        "duplicate_extra_video",
+    ]
+    assert [record["member_path"] for record in result.records] == [member.path for member in members]

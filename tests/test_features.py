@@ -52,3 +52,32 @@ def test_records_field_lengths_that_do_not_match_the_split_sample_count() -> Non
 
     assert result["splits"]["train"]["sample_count"] == 2
     assert result["splits"]["train"]["inconsistent_fields"] == {"audio": 3}
+
+
+def test_uses_numeric_list_lengths_for_statistics_and_padding_zero_runs() -> None:
+    payload = {
+        "train": {
+            "id": np.array(["a"]),
+            "audio": np.array([[[1.0], [0.0], [0.0]]]),
+            "audio_lengths": [1],
+        },
+        "valid": {"id": np.array(["b"])},
+        "test": {"id": np.array(["c"])},
+    }
+
+    result = audit_feature_dataset(payload, source_name="unaligned_50.pkl")
+
+    train = result["splits"]["train"]
+    assert train["length_fields"]["audio_lengths"] == {"min": 1, "max": 1, "mean": 1.0}
+    assert train["fields"]["audio"]["zero_runs"]["outside_valid_positions"] == 2
+
+
+def test_records_missing_split_as_a_feature_contract_error() -> None:
+    payload = {
+        "train": {"id": np.array(["a"])},
+        "valid": {"id": np.array(["b"])},
+    }
+
+    result = audit_feature_dataset(payload, source_name="fixture.pkl")
+
+    assert result["errors"] == ["missing or invalid split: test"]

@@ -49,3 +49,23 @@ def test_audits_attachment_four_single_sample_with_its_provided_id() -> None:
     assert result.records[0]["sample_id"] == "01"
     assert result.records[0]["layout"] == "single_sample"
     assert result.records[0]["fields"]["audio"]["shape"] == [2, 2]
+
+
+def test_rejects_nested_fields_with_inconsistent_batch_dimensions() -> None:
+    payload = {
+        "test": {
+            "id": np.array(["a", "b"]),
+            "audio": np.ones((2, 3, 2)),
+            "vision": np.ones((1, 3, 2)),
+        }
+    }
+
+    result = audit_special_payload(
+        payload,
+        attachment="attachment3",
+        version="aligned",
+        source_file="附件3_bad.pkl",
+    )
+
+    assert result.records == []
+    assert result.errors == ["附件3_bad.pkl: inconsistent nested sample count for vision: 1 != 2"]

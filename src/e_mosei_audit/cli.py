@@ -27,7 +27,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-    return 1 if summary["raw_error_count"] or summary["special_error_count"] else 0
+    return 1 if any(
+        summary.get(error_count, 0)
+        for error_count in ("raw_error_count", "feature_error_count", "special_error_count")
+    ) else 0
 
 
 def _build_parser() -> argparse.ArgumentParser:

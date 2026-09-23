@@ -14,7 +14,7 @@ python3 -m venv .venv
 如果系统 Python 没有 `ensurepip`，可将 Excel 依赖安装到忽略的本地工具目录，并从源码启动：
 
 ```bash
-python3 -m pip install --target .tools/python 'openpyxl>=3.1'
+python3 -m pip install --target .tools/python 'numpy>=1.26' 'openpyxl>=3.1' 'pandas>=2.2'
 export PYTHONPATH="$PWD/src:$PWD/.tools/python"
 ```
 

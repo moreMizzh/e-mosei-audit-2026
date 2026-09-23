@@ -69,20 +69,25 @@ def audit_raw_mapping(
         result.records.append(record)
 
     for key in sorted(set(videos_by_key) - set(labels_by_key)):
-        video = videos_by_key[key][0]
+        videos = videos_by_key[key]
         video_id, clip_id = _split_sample_key(key)
+        mapping_status = "extra_video"
+        if len(videos) > 1:
+            result.errors.append(f"duplicate video key: {key}")
+            mapping_status = "duplicate_extra_video"
         result.errors.append(f"video has no label: {key}")
-        result.records.append(
-            {
-                "sample_id": key,
-                "video_id": video_id,
-                "clip_id": clip_id,
-                "member_path": video.path,
-                "mapping_status": "extra_video",
-                "duration_seconds": None,
-                "duration_status": "not_checked",
-            }
-        )
+        for video in videos:
+            result.records.append(
+                {
+                    "sample_id": key,
+                    "video_id": video_id,
+                    "clip_id": clip_id,
+                    "member_path": video.path,
+                    "mapping_status": mapping_status,
+                    "duration_seconds": None,
+                    "duration_status": "not_checked",
+                }
+            )
     return result
 
 

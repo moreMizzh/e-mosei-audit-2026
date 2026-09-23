@@ -118,3 +118,29 @@ def test_refuses_to_overwrite_an_existing_output_directory(tmp_path) -> None:
 
     with pytest.raises(FileExistsError, match="already exists"):
         run_audit(_MemoryArchive([], {}), output, archive_name="fixture.zip")
+
+
+def test_counts_and_reports_feature_contract_errors(tmp_path) -> None:
+    prefix = "E题数据"
+    video_path = f"{prefix}/附件1-数据集原始多模态样本/videos/video-a/01.mp4"
+    label_path = f"{prefix}/附件1-数据集原始多模态样本/label-100.xlsx"
+    aligned_path = f"{prefix}/附件2-数据集特征文件/aligned_50.pkl"
+    unaligned_path = f"{prefix}/附件2-数据集特征文件/unaligned_50.pkl"
+    members = [_member(video_path), _member(label_path), _member(aligned_path), _member(unaligned_path)]
+    incomplete_payload = _feature_payload()
+    del incomplete_payload["test"]
+    contents = {
+        video_path: _mp4(),
+        label_path: _xlsx(),
+        aligned_path: pickle.dumps(incomplete_payload),
+        unaligned_path: pickle.dumps(_feature_payload()),
+    }
+
+    output = tmp_path / "audit"
+    summary = run_audit(_MemoryArchive(members, contents), output, archive_name="fixture.zip")
+
+    assert summary["feature_error_count"] == 1
+    assert "附件 2 特征错误：1" in (output / "audit_report.md").read_text(encoding="utf-8")
+    assert "aligned_50.pkl: missing or invalid split: test" in (
+        output / "audit_report.md"
+    ).read_text(encoding="utf-8")

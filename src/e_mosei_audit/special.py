@@ -43,6 +43,11 @@ def audit_special_payload(
     if sample_count is None or sample_count < 1:
         result.errors.append(f"{source_file}: could not determine a positive sample count")
         return result
+    if layout == "nested_test":
+        dimension_errors = _nested_dimension_errors(fields, sample_count, source_file)
+        if dimension_errors:
+            result.errors.extend(dimension_errors)
+            return result
 
     for index in range(sample_count):
         values = {name: _value_for_sample(value, index, sample_count, layout) for name, value in fields.items()}
@@ -70,6 +75,24 @@ def _batch_size(fields: Mapping[str, Any]) -> int | None:
         return 1
     counts = Counter(lengths)
     return max(counts, key=lambda length: (counts[length], -length))
+
+
+def _nested_dimension_errors(
+    fields: Mapping[str, Any], sample_count: int, source_file: str
+) -> list[str]:
+    errors: list[str] = []
+    for name, value in sorted(fields.items()):
+        if isinstance(value, np.ndarray) and value.ndim >= 1:
+            length = int(value.shape[0])
+        elif isinstance(value, (list, tuple)):
+            length = len(value)
+        else:
+            continue
+        if length != sample_count:
+            errors.append(
+                f"{source_file}: inconsistent nested sample count for {name}: {length} != {sample_count}"
+            )
+    return errors
 
 
 def _value_for_sample(value: Any, index: int, sample_count: int, layout: str) -> Any:
