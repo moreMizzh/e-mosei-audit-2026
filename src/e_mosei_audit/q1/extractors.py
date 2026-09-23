@@ -87,7 +87,10 @@ def text_slot_features(
         raise ValueError("embeddings and intervals must have matching leading dimensions")
     starts = np.asarray([interval.start for interval in normalized_intervals])
     ends = np.asarray([interval.end for interval in normalized_intervals])
-    return pool_intervals(values, starts, ends, np.asarray(slots))
+    slot_values = np.asarray(slots)
+    if np.iscomplexobj(slot_values):
+        raise ValueError("slots must be a real numeric array")
+    return pool_intervals(values, starts, ends, slot_values)
 
 
 def normalize_bert_embeddings(values: object) -> np.ndarray:
@@ -173,6 +176,7 @@ def build_bert_encoder(model_cache: Path) -> TextEncoder:
     cache = _model_cache(model_cache, "BERT")
     asset = _cached_asset(
         cache,
+        "bert-base-uncased",
         "bert-base-uncased",
         "models--google-bert--bert-base-uncased",
         "models--bert-base-uncased",

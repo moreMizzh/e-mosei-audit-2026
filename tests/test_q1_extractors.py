@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -60,6 +61,15 @@ def test_text_slot_features_rejects_embedding_interval_count_mismatch() -> None:
 
     with pytest.raises(ValueError, match="matching"):
         text_slot_features(embeddings, [WordInterval("one", 0.0, 1.0, 0, 3)], slots)
+
+
+def test_text_slot_features_rejects_complex_slots_before_pooling() -> None:
+    with pytest.raises(ValueError, match="slots"):
+        text_slot_features(
+            np.array([[1.0]], dtype=np.float32),
+            [WordInterval("one", 0.0, 1.0, 0, 3)],
+            np.array([[0.0 + 4.0j, 1.0 + 4.0j]]),
+        )
 
 
 @pytest.mark.parametrize(
@@ -149,3 +159,253 @@ def test_normalize_opensmile_windows_requires_exactly_25_lld_dimensions() -> Non
             np.array([0.0]),
             np.array([0.025]),
         )
+
+
+def test_bert_factory_maps_768_dimensional_tokens_to_supplied_word_intervals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "models"
+    asset = cache / "bert-base-uncased"
+    asset.mkdir(parents=True)
+    (asset / "config.json").write_text("{}")
+    calls: list[dict[str, object]] = []
+
+    class Tensor:
+        def __getitem__(self, _: object) -> "Tensor":
+            return self
+
+        def detach(self) -> "Tensor":
+            return self
+
+        def cpu(self) -> "Tensor":
+            return self
+
+        def numpy(self) -> np.ndarray:
+            return np.arange(2 * 768, dtype=np.float32).reshape(2, 768)
+
+    class Tokenizer:
+        def __call__(self, text: str, **_: object) -> dict[str, object]:
+            assert text == "hello world"
+            return {
+                "input_ids": object(),
+                "offset_mapping": np.array([[[0, 5], [6, 11]]]),
+            }
+
+    class Model:
+        def eval(self) -> None:
+            return None
+
+        def __call__(self, **_: object) -> SimpleNamespace:
+            return SimpleNamespace(last_hidden_state=Tensor())
+
+    class AutoTokenizer:
+        @staticmethod
+        def from_pretrained(_: str, **kwargs: object) -> Tokenizer:
+            calls.append(dict(kwargs))
+            return Tokenizer()
+
+    class AutoModel:
+        @staticmethod
+        def from_pretrained(_: str, **kwargs: object) -> Model:
+            calls.append(dict(kwargs))
+            return Model()
+
+    class NoGrad:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    fake_transformers = SimpleNamespace(AutoTokenizer=AutoTokenizer, AutoModel=AutoModel)
+    fake_torch = SimpleNamespace(no_grad=NoGrad)
+    _patch_optional_packages(
+        monkeypatch, {"transformers": fake_transformers, "torch": fake_torch}
+    )
+
+    encoder = extractors.build_bert_encoder(cache)
+    values, intervals = encoder.encode(
+        "hello world",
+        [
+            WordInterval("hello", 0.1, 0.4, 0, 5),
+            WordInterval("world", 0.6, 0.9, 6, 11),
+        ],
+    )
+
+    assert values.shape == (2, 768)
+    assert [(item.word, item.start, item.end) for item in intervals] == [
+        ("hello", 0.1, 0.4),
+        ("world", 0.6, 0.9),
+    ]
+    assert all(call["local_files_only"] is True for call in calls)
+
+
+def test_whisperx_factory_aligns_the_original_supplied_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "models"
+    (cache / "models--facebook--wav2vec2-base-960h").mkdir(parents=True)
+    wav_path = tmp_path / "audio.wav"
+    wav_path.write_bytes(b"fake wav")
+
+    class FakeWhisperX:
+        segments: list[dict[str, object]] | None = None
+
+        @staticmethod
+        def load_align_model(**kwargs: object) -> tuple[object, object]:
+            assert kwargs["model_cache_only"] is True
+            return object(), object()
+
+        @staticmethod
+        def load_audio(path: str) -> str:
+            assert path == str(wav_path)
+            return "audio"
+
+        def align(self, segments: list[dict[str, object]], *_: object, **__: object) -> dict[str, object]:
+            self.segments = segments
+            return {
+                "segments": [
+                    {
+                        "words": [
+                            {"word": "hello", "start": 0.1, "end": 0.4},
+                            {"word": "world", "start": 0.6, "end": 0.9},
+                        ]
+                    }
+                ]
+            }
+
+    whisperx = FakeWhisperX()
+    _patch_optional_packages(monkeypatch, {"whisperx": whisperx})
+
+    words = extractors.build_whisperx_aligner(cache).align(
+        wav_path, "hello world", 1.0
+    )
+
+    assert whisperx.segments == [{"start": 0.0, "end": 1.0, "text": "hello world"}]
+    assert words == (
+        WordInterval("hello", 0.1, 0.4, 0, 5),
+        WordInterval("world", 0.6, 0.9, 6, 11),
+    )
+
+
+def test_opensmile_factory_requests_lld_and_returns_25_dimensional_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wav_path = tmp_path / "audio.wav"
+    wav_path.write_bytes(b"fake wav")
+    requested: dict[str, object] = {}
+
+    class FakeFrame:
+        index = [(0.0, 0.025), (0.01, 0.035)]
+
+        @staticmethod
+        def to_numpy() -> np.ndarray:
+            return np.ones((2, 25), dtype=np.float64)
+
+    class FakeSmile:
+        def __init__(self, **kwargs: object) -> None:
+            requested.update(kwargs)
+
+        @staticmethod
+        def process_file(path: str) -> FakeFrame:
+            assert path == str(wav_path)
+            return FakeFrame()
+
+    feature_set = object()
+    feature_level = object()
+    fake_opensmile = SimpleNamespace(
+        Smile=FakeSmile,
+        FeatureSet=SimpleNamespace(eGeMAPSv02=feature_set),
+        FeatureLevel=SimpleNamespace(LowLevelDescriptors=feature_level),
+    )
+    _patch_optional_packages(monkeypatch, {"opensmile": fake_opensmile})
+
+    values, starts, ends = extractors.build_opensmile_extractor().extract(wav_path)
+
+    assert requested == {"feature_set": feature_set, "feature_level": feature_level}
+    assert values.shape == (2, 25)
+    assert starts.tolist() == [0.0, 0.01]
+    assert ends.tolist() == [0.025, 0.035]
+
+
+def test_mediapipe_factory_returns_exactly_empty_56_dimensional_frames_without_faces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "models"
+    cache.mkdir()
+    (cache / "face_landmarker.task").write_bytes(b"fake model")
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
+    (frame_dir / "frame_000001.png").write_bytes(b"fake png")
+
+    class FakeLandmarker:
+        @staticmethod
+        def detect(_: object) -> SimpleNamespace:
+            return SimpleNamespace(face_landmarks=[])
+
+    class FaceLandmarker:
+        @staticmethod
+        def create_from_options(_: object) -> FakeLandmarker:
+            return FakeLandmarker()
+
+    fake_mediapipe = SimpleNamespace(
+        Image=SimpleNamespace(create_from_file=lambda _: object()),
+        tasks=SimpleNamespace(
+            BaseOptions=lambda **kwargs: kwargs,
+            vision=SimpleNamespace(
+                FaceLandmarkerOptions=lambda **kwargs: kwargs,
+                FaceLandmarker=FaceLandmarker,
+                RunningMode=SimpleNamespace(IMAGE="IMAGE"),
+            ),
+        ),
+    )
+    _patch_optional_packages(monkeypatch, {"mediapipe": fake_mediapipe})
+
+    values, starts, ends = extractors.build_mediapipe_extractor(cache).extract(frame_dir)
+
+    assert values.shape == (0, 56)
+    assert values.dtype == np.float32
+    assert starts.shape == (0,)
+    assert ends.shape == (0,)
+
+
+@pytest.mark.parametrize(
+    ("builder_name", "package", "expected_asset"),
+    [
+        ("build_whisperx_aligner", "whisperx", "facebook/wav2vec2-base-960h"),
+        ("build_bert_encoder", "transformers", "bert-base-uncased"),
+        ("build_mediapipe_extractor", "mediapipe", "face_landmarker.task"),
+    ],
+)
+def test_model_factories_report_missing_expected_local_assets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    builder_name: str,
+    package: str,
+    expected_asset: str,
+) -> None:
+    cache = tmp_path / "empty-model-cache"
+    cache.mkdir()
+    packages: dict[str, object] = {
+        "whisperx": object(),
+        "transformers": object(),
+        "torch": object(),
+        "mediapipe": object(),
+    }
+    _patch_optional_packages(monkeypatch, packages)
+
+    with pytest.raises(RuntimeError, match=expected_asset):
+        getattr(extractors, builder_name)(cache)
+
+
+def _patch_optional_packages(
+    monkeypatch: pytest.MonkeyPatch, packages: dict[str, object]
+) -> None:
+    original_import_module = extractors.importlib.import_module
+
+    def import_fake_package(name: str, package: object = None) -> object:
+        if name in packages:
+            return packages[name]
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(extractors.importlib, "import_module", import_fake_package)
