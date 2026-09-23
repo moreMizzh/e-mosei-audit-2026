@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -24,6 +25,9 @@ class Q1Config:
     ffmpeg: Path
     model_cache: Path
     output_dir: Path
+
+    def with_output_dir(self, output_dir: Path) -> "Q1Config":
+        return dataclasses.replace(self, output_dir=output_dir)
 
 
 def load_config(path: Path) -> Q1Config:
