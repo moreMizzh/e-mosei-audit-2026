@@ -94,6 +94,8 @@ def _validate_pool_inputs(
         raise ValueError("slot intervals must have positive duration")
     if np.any(slots_array[1:, 0] < slots_array[:-1, 1]):
         raise ValueError("slots must be monotonic and non-overlapping")
+    if np.any(slots_array[1:, 0] > slots_array[:-1, 1]):
+        raise ValueError("slots must be contiguous")
 
     return values_array, starts_array, ends_array, slots_array
 

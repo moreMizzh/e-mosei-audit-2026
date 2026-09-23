@@ -145,3 +145,14 @@ def test_pooling_rejects_invalid_arrays_and_time_bounds(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         pool(values, starts, ends, slots)
+
+
+@pytest.mark.parametrize("pool", [pool_intervals, pool_moments])
+def test_pooling_rejects_gapped_slots(pool: object) -> None:
+    with pytest.raises(ValueError, match="contiguous"):
+        pool(
+            np.array([[1.0]], dtype=np.float32),
+            np.array([0.0]),
+            np.array([1.0]),
+            np.array([[0.0, 0.4], [0.6, 1.0]]),
+        )
