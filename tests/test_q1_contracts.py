@@ -266,6 +266,34 @@ def test_write_coverage_writes_success_and_failure_rows_with_summary(
     assert json.loads((tmp_path / "q1_summary.json").read_text()) == counts
 
 
+def test_write_coverage_rolls_back_when_summary_publication_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contracts = _contracts()
+    output = tmp_path / "q1_samples.csv"
+    summary = tmp_path / "q1_summary.json"
+    original_replace = contracts.os.replace
+    replace_calls = 0
+
+    def fail_second_replace(source: object, destination: object) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 2:
+            raise OSError("simulated summary publication failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(contracts.os, "replace", fail_second_replace)
+
+    with pytest.raises(OSError, match="simulated summary publication failure"):
+        contracts.write_coverage(output, [_coverage_row("one")], expected_count=1)
+
+    assert replace_calls == 2
+    assert not output.exists()
+    assert not summary.exists()
+    assert not list(tmp_path.glob(".q1_samples.csv.*.tmp"))
+    assert not list(tmp_path.glob(".q1_summary.json.*.tmp"))
+
+
 @pytest.mark.parametrize("existing_name", ["q1_samples.csv", "q1_summary.json"])
 def test_write_coverage_refuses_to_overwrite_existing_outputs(
     tmp_path: Path, existing_name: str

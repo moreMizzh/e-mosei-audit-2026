@@ -246,6 +246,8 @@ def _write_coverage_outputs(
 ) -> None:
     csv_temp: Path | None = None
     summary_temp: Path | None = None
+    csv_published = False
+    summary_published = False
     try:
         csv_temp = _new_temp_path(output)
         with csv_temp.open("w", encoding="utf-8", newline="") as coverage_file:
@@ -266,8 +268,16 @@ def _write_coverage_outputs(
             raise ValueError("coverage output or summary already exists")
         os.replace(csv_temp, output)
         csv_temp = None
+        csv_published = True
         os.replace(summary_temp, summary)
         summary_temp = None
+        summary_published = True
+    except Exception:
+        if summary_published:
+            summary.unlink(missing_ok=True)
+        if csv_published:
+            output.unlink(missing_ok=True)
+        raise
     finally:
         for temporary_path in (csv_temp, summary_temp):
             if temporary_path is not None:
