@@ -14,6 +14,7 @@ from e_mosei_audit.q2.config import (
     validate_fusion_variant,
     validate_text_adapter_variant,
     validate_temporal_position_variant,
+    validate_temporal_pooling_variant,
 )
 
 
@@ -96,6 +97,7 @@ class MaskAwareTemporalFusion(nn.Module):
         dropout: float = 0.1,
         fusion_variant: str = "gated",
         temporal_position_variant: str = "none",
+        temporal_pooling_variant: str = "attention",
         text_adapter_variant: str = "identity",
         classification_variant: str = "flat",
     ) -> None:
@@ -104,6 +106,7 @@ class MaskAwareTemporalFusion(nn.Module):
             raise ValueError("hidden_size must be positive, layers/heads positive, and hidden_size divisible by heads")
         self.fusion_variant = validate_fusion_variant(fusion_variant)
         self.temporal_position_variant = validate_temporal_position_variant(temporal_position_variant)
+        self.temporal_pooling_variant = validate_temporal_pooling_variant(temporal_pooling_variant)
         self.text_adapter_variant = validate_text_adapter_variant(text_adapter_variant)
         self.classification_variant = validate_classification_variant(classification_variant)
         if self.fusion_variant == "late_expert_shared" and self.classification_variant == "corn":
@@ -137,6 +140,13 @@ class MaskAwareTemporalFusion(nn.Module):
         classifier_size = 2 if self.classification_variant == "corn" else 3
         self.classifier = nn.Sequential(nn.LayerNorm(hidden_size + 3), nn.Linear(hidden_size + 3, classifier_size))
         self.regressor = nn.Sequential(nn.LayerNorm(hidden_size + 3), nn.Linear(hidden_size + 3, 1))
+        if self.temporal_pooling_variant == "attention_availability":
+            rng_state = torch.get_rng_state()
+            try:
+                self.pool_availability_bias = nn.Linear(3, 1, bias=False)
+                nn.init.zeros_(self.pool_availability_bias.weight)
+            finally:
+                torch.set_rng_state(rng_state)
         if self.text_adapter_variant == "houlsby_output_b32":
             rng_state = torch.get_rng_state()
             try:
@@ -241,7 +251,12 @@ class MaskAwareTemporalFusion(nn.Module):
 
         encoded = self.temporal_encoder(fused, src_key_padding_mask=~temporal)
         encoded = encoded.masked_fill(~temporal.unsqueeze(-1), 0.0)
-        attention_logits = self.pool_attention(encoded).squeeze(-1).masked_fill(~temporal, float("-inf"))
+        attention_logits = self.pool_attention(encoded).squeeze(-1)
+        if self.temporal_pooling_variant == "attention_availability":
+            attention_logits = attention_logits + self.pool_availability_bias(
+                availability.to(dtype=encoded.dtype)
+            ).squeeze(-1)
+        attention_logits = attention_logits.masked_fill(~temporal, float("-inf"))
         temporal_attention = torch.softmax(attention_logits, dim=1)
         pooled = torch.sum(temporal_attention.unsqueeze(-1) * encoded, dim=1)
         if self.fusion_variant == "pooled_lmf_r4":
