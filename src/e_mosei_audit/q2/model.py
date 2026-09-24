@@ -349,7 +349,11 @@ def _projection(input_size: int, hidden_size: int) -> nn.Sequential:
     return nn.Sequential(nn.Linear(input_size, hidden_size), nn.LayerNorm(hidden_size), nn.GELU())
 
 
-def _pairwise_hadamard_residual(states, availability, temporal_mask):
+def _pairwise_hadamard_residual(
+    states: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    availability: torch.Tensor,
+    temporal_mask: torch.Tensor,
+) -> torch.Tensor:
     pair_masks = (
         temporal_mask & availability[..., 0] & availability[..., 1],
         temporal_mask & availability[..., 0] & availability[..., 2],
