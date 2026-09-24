@@ -21,4 +21,5 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+temporal_position_variant = "none"
 device = "cuda"

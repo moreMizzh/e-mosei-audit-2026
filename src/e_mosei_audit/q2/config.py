@@ -22,6 +22,7 @@ FUSION_VARIANTS = (
 )
 TEXT_ADAPTER_VARIANTS = ("identity", "houlsby_output_b32")
 CLASSIFICATION_VARIANTS = ("flat", "corn")
+TEMPORAL_POSITION_VARIANTS = ("none", "sinusoidal")
 _TRAINING_FIELDS = (
     "seed",
     "epochs",
@@ -39,6 +40,7 @@ _TRAINING_FIELDS = (
     "fusion_variant",
     "text_adapter_variant",
     "classification_variant",
+    "temporal_position_variant",
     "device",
 )
 
@@ -65,6 +67,7 @@ class Q2Config:
     fusion_variant: str
     text_adapter_variant: str
     classification_variant: str
+    temporal_position_variant: str
     device: str
 
 
@@ -109,6 +112,7 @@ def load_q2_config(path: Path) -> Q2Config:
         fusion_variant=validate_fusion_variant(values["fusion_variant"]),
         text_adapter_variant=validate_text_adapter_variant(values["text_adapter_variant"]),
         classification_variant=validate_classification_variant(values["classification_variant"]),
+        temporal_position_variant=validate_temporal_position_variant(values["temporal_position_variant"]),
         device=values["device"],
     )
 
@@ -194,6 +198,7 @@ def _validate_training(values: Mapping[str, object]) -> None:
     validate_fusion_variant(values["fusion_variant"])
     validate_text_adapter_variant(values["text_adapter_variant"])
     validate_classification_variant(values["classification_variant"])
+    validate_temporal_position_variant(values["temporal_position_variant"])
     if values["hidden_size"] % values["heads"]:
         raise ValueError("hidden_size must be divisible by heads")
     if not isinstance(values["device"], str) or not values["device"]:
@@ -224,4 +229,12 @@ def validate_classification_variant(value: object) -> str:
 
     if not isinstance(value, str) or value not in CLASSIFICATION_VARIANTS:
         raise ValueError("classification_variant must be one of: flat, corn")
+    return value
+
+
+def validate_temporal_position_variant(value: object) -> str:
+    """Require one of the persisted Q2 temporal position encodings."""
+
+    if not isinstance(value, str) or value not in TEMPORAL_POSITION_VARIANTS:
+        raise ValueError("temporal_position_variant must be one of: none, sinusoidal")
     return value
