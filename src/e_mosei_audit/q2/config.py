@@ -24,6 +24,7 @@ TEXT_ADAPTER_VARIANTS = ("identity", "houlsby_output_b32")
 CLASSIFICATION_VARIANTS = ("flat", "corn")
 TEMPORAL_POSITION_VARIANTS = ("none", "sinusoidal")
 TEMPORAL_POOLING_VARIANTS = ("attention", "attention_availability")
+TEXT_ENCODER_VARIANTS = ("last_hidden_state", "last4_scalar_mix")
 _TRAINING_FIELDS = (
     "seed",
     "epochs",
@@ -43,6 +44,7 @@ _TRAINING_FIELDS = (
     "classification_variant",
     "temporal_position_variant",
     "temporal_pooling_variant",
+    "text_encoder_variant",
     "device",
 )
 
@@ -71,6 +73,7 @@ class Q2Config:
     classification_variant: str
     temporal_position_variant: str
     temporal_pooling_variant: str
+    text_encoder_variant: str
     device: str
 
 
@@ -117,6 +120,7 @@ def load_q2_config(path: Path) -> Q2Config:
         classification_variant=validate_classification_variant(values["classification_variant"]),
         temporal_position_variant=validate_temporal_position_variant(values["temporal_position_variant"]),
         temporal_pooling_variant=validate_temporal_pooling_variant(values["temporal_pooling_variant"]),
+        text_encoder_variant=validate_text_encoder_variant(values["text_encoder_variant"]),
         device=values["device"],
     )
 
@@ -204,6 +208,7 @@ def _validate_training(values: Mapping[str, object]) -> None:
     validate_classification_variant(values["classification_variant"])
     validate_temporal_position_variant(values["temporal_position_variant"])
     validate_temporal_pooling_variant(values["temporal_pooling_variant"])
+    validate_text_encoder_variant(values["text_encoder_variant"])
     if values["hidden_size"] % values["heads"]:
         raise ValueError("hidden_size must be divisible by heads")
     if not isinstance(values["device"], str) or not values["device"]:
@@ -250,4 +255,12 @@ def validate_temporal_pooling_variant(value: object) -> str:
 
     if not isinstance(value, str) or value not in TEMPORAL_POOLING_VARIANTS:
         raise ValueError("temporal_pooling_variant must be one of: attention, attention_availability")
+    return value
+
+
+def validate_text_encoder_variant(value: object) -> str:
+    """Require one of the persisted Q2 text encoder output variants."""
+
+    if not isinstance(value, str) or value not in TEXT_ENCODER_VARIANTS:
+        raise ValueError("text_encoder_variant must be one of: last_hidden_state, last4_scalar_mix")
     return value
