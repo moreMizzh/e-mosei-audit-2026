@@ -13,6 +13,7 @@ from e_mosei_audit.q2.data import (
     DataContractError,
     aligned_split_from_mapping,
     load_aligned_dataset,
+    load_aligned_train_valid,
     load_attachment3_aligned,
     normalise_text_bert,
 )
@@ -137,9 +138,68 @@ def test_load_aligned_dataset_reads_only_selected_feature_member() -> None:
     assert dataset.test.sample_count == 1
 
 
+def test_load_aligned_train_valid_does_not_validate_held_out_test_split() -> None:
+    archive = FakeArchive(
+        {
+            ALIGNED_50_MEMBER: {
+                "train": aligned_split_mapping(2),
+                "valid": aligned_split_mapping(1),
+                "test": {"intentionally": "not a Q2 runtime input"},
+            }
+        }
+    )
+
+    dataset = load_aligned_train_valid(archive)
+
+    assert archive.opened == [ALIGNED_50_MEMBER]
+    assert dataset.train.sample_count == 2
+    assert dataset.valid.sample_count == 1
+
+
+def test_load_attachment3_aligned_rejects_duplicate_sample_numbers() -> None:
+    class DuplicateArchive(FakeArchive):
+        def list_members(self):
+            members = super().list_members()
+            return [*members, members[0]]
+
+    archive = DuplicateArchive(
+        {"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_01.pkl": attachment3_payload(101)}
+    )
+
+    with pytest.raises(DataContractError, match="duplicate aligned Attachment 3 sample numbers"):
+        load_attachment3_aligned(archive)
+
+
+def test_load_attachment3_aligned_requires_complete_01_through_30_contract() -> None:
+    archive = FakeArchive(
+        {"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_01.pkl": attachment3_payload(101)}
+    )
+
+    with pytest.raises(DataContractError, match="must be exactly 01 through 30"):
+        load_attachment3_aligned(archive, require_complete=True)
+
+
+@pytest.mark.parametrize("filename", ["附件3_1.pkl", "附件3_001.pkl", "附件3_31.pkl", "copy_附件3_01.pkl"])
+def test_load_attachment3_aligned_rejects_noncanonical_sample_filename(filename: str) -> None:
+    archive = FakeArchive(
+        {f"E题数据/附件3-模态缺失特征样本/对齐版本/{filename}": attachment3_payload(101)}
+    )
+
+    with pytest.raises(DataContractError, match="unexpected aligned Attachment 3 member name"):
+        load_attachment3_aligned(archive)
+
+
 def test_aligned_split_rejects_nonfinite_audio_feature() -> None:
     fields = aligned_split_mapping()
     fields["audio"][0, 0, 0] = np.nan
 
     with pytest.raises(DataContractError, match="audio"):
+        aligned_split_from_mapping(fields, split_name="train")
+
+
+def test_aligned_split_rejects_nonfinite_regression_label() -> None:
+    fields = aligned_split_mapping()
+    fields["regression_labels"] = np.array([-1.0, np.nan])
+
+    with pytest.raises(DataContractError, match="regression_labels"):
         aligned_split_from_mapping(fields, split_name="train")

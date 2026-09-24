@@ -105,12 +105,18 @@ class MaskAwareTemporalFusion(nn.Module):
         """Return joint predictions while applying masks before fusion and pooling."""
 
         _validate_inputs(text, audio, vision, masks)
-        states = (
+        availability = torch.stack((masks.text, masks.audio, masks.vision), dim=-1)
+        projected_states = (
             self.text_projection(text),
             self.audio_projection(audio),
             self.vision_projection(vision),
         )
-        availability = torch.stack((masks.text, masks.audio, masks.vision), dim=-1)
+        # Remove both source values and projection biases before gating so an
+        # unavailable modality cannot perturb weights of available modalities.
+        states = tuple(
+            state.masked_fill(~availability[..., index : index + 1], 0.0)
+            for index, state in enumerate(projected_states)
+        )
         any_available = availability.any(dim=-1)
         temporal = masks.temporal & any_available
         if not bool(temporal.any(dim=1).all()):

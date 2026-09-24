@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from e_mosei_audit.q2.missingness import (
     ModalityMasks,
@@ -53,6 +54,46 @@ def test_contiguous_drop_never_changes_padding_or_original_masks() -> None:
     assert not result.masks.audio[0, result.drops[0].start : result.drops[0].start + 2].any()
 
 
+def test_contiguous_drop_only_selects_positions_available_in_target_modality() -> None:
+    masks = ModalityMasks(
+        text=np.array([[True] * 6]),
+        audio=np.array([[False, True, True, False, True, True]]),
+        vision=np.array([[True] * 6]),
+        temporal=np.array([[True] * 6]),
+    )
+
+    result = apply_contiguous_drop(
+        masks,
+        rng=np.random.default_rng(3),
+        modalities=("audio",),
+        fraction_range=(1.0, 1.0),
+    )
+
+    assert len(result.drops) == 1
+    drop = result.drops[0]
+    assert masks.audio[0, drop.start : drop.start + drop.length].all()
+    assert np.count_nonzero(masks.audio & ~result.masks.audio) == drop.length
+
+
+def test_contiguous_drop_skips_samples_without_target_modality_evidence() -> None:
+    masks = ModalityMasks(
+        text=np.array([[True] * 4]),
+        audio=np.array([[False] * 4]),
+        vision=np.array([[True] * 4]),
+        temporal=np.array([[True] * 4]),
+    )
+
+    result = apply_contiguous_drop(
+        masks,
+        rng=np.random.default_rng(3),
+        modalities=("audio",),
+        fraction_range=(0.5, 0.5),
+    )
+
+    assert result.drops == ()
+    np.testing.assert_array_equal(result.masks.audio, masks.audio)
+
+
 def test_validation_scenarios_cover_every_modality_position_and_duration() -> None:
     scenarios = validation_scenarios()
 
@@ -83,6 +124,41 @@ def test_validation_middle_scenario_hides_center_of_valid_run() -> None:
     np.testing.assert_array_equal(original.audio, [[True] * 10 + [False] * 2])
 
 
+def test_validation_scenario_skips_samples_without_target_modality_evidence() -> None:
+    masks = ModalityMasks(
+        text=np.array([[True] * 4]),
+        audio=np.array([[False] * 4]),
+        vision=np.array([[True] * 4]),
+        temporal=np.array([[True] * 4]),
+    )
+
+    result = apply_validation_scenario(
+        masks, ValidationScenario(modality="audio", position="beginning", fraction=0.5)
+    )
+
+    assert result.drops == ()
+    np.testing.assert_array_equal(result.masks.audio, masks.audio)
+
+
+def test_validation_scenario_records_actual_coverage_for_multiple_available_runs() -> None:
+    masks = ModalityMasks(
+        text=np.array([[True] * 11]),
+        audio=np.array([[True, True, True, False, True, True, True, True, True, True, True]]),
+        vision=np.array([[True] * 11]),
+        temporal=np.array([[True] * 11]),
+    )
+
+    result = apply_validation_scenario(
+        masks, ValidationScenario(modality="audio", position="beginning", fraction=0.5)
+    )
+
+    drop = result.drops[0]
+    assert drop.selected_run_length == 7
+    assert drop.target_available_positions == 10
+    assert drop.length == 4
+    assert drop.actual_available_fraction == pytest.approx(0.4)
+
+
 def test_fit_normalizer_uses_only_training_available_positions() -> None:
     masks = ModalityMasks(
         text=np.array([[True, True, False]]),
@@ -101,3 +177,19 @@ def test_fit_normalizer_uses_only_training_available_positions() -> None:
     np.testing.assert_allclose(normalizer.audio_std, np.full(74, 1.0))
     np.testing.assert_allclose(normalizer.vision_mean, np.full(35, 4.0))
     np.testing.assert_allclose(normalizer.vision_std, np.full(35, 2.0))
+
+
+def test_fit_normalizer_uses_one_for_zero_variance_dimensions() -> None:
+    masks = ModalityMasks(
+        text=np.array([[True, True]]),
+        audio=np.array([[True, True]]),
+        vision=np.array([[True, True]]),
+        temporal=np.array([[True, True]]),
+    )
+    audio = np.full((1, 2, 74), 3.0, dtype=np.float32)
+    vision = np.full((1, 2, 35), 4.0, dtype=np.float32)
+
+    normalizer = fit_normalizer(audio, vision, masks)
+
+    np.testing.assert_array_equal(normalizer.audio_std, np.ones(74))
+    np.testing.assert_array_equal(normalizer.vision_std, np.ones(35))

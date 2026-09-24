@@ -61,6 +61,23 @@ def test_gate_assigns_zero_weight_to_an_unavailable_modality() -> None:
     assert torch.equal(output.gates[:, :, 1], torch.zeros_like(output.gates[:, :, 1]))
 
 
+def test_unavailable_modality_values_cannot_change_any_fusion_output() -> None:
+    """Availability must cut the value path before the gate network sees it."""
+
+    torch.manual_seed(9)
+    model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+    masks = example_masks(audio_available=False)
+    text = torch.randn(2, 50, 768)
+    vision = torch.randn(2, 50, 35)
+    baseline = model(text=text, audio=torch.zeros(2, 50, 74), vision=vision, masks=masks)
+    changed = model(text=text, audio=torch.full((2, 50, 74), 1_000_000.0), vision=vision, masks=masks)
+
+    torch.testing.assert_close(changed.logits, baseline.logits)
+    torch.testing.assert_close(changed.score, baseline.score)
+    torch.testing.assert_close(changed.gates, baseline.gates)
+    torch.testing.assert_close(changed.temporal_attention, baseline.temporal_attention)
+
+
 def test_frozen_bert_encoder_uses_three_token_rows_without_gradients() -> None:
     bert = FakeBert()
     encoder = FrozenBertEncoder(bert, device=torch.device("cpu"))

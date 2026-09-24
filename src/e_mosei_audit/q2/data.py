@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 import pickle
@@ -64,6 +65,14 @@ class AlignedDataset:
     test: AlignedSplit
 
 
+@dataclass(frozen=True)
+class AlignedTrainValidDataset:
+    """The only Attachment 2 splits permitted in the Problem 2 runtime flow."""
+
+    train: AlignedSplit
+    valid: AlignedSplit
+
+
 def normalise_text_bert(value: np.ndarray) -> np.ndarray:
     """Validate BERT's three-row token interface and return int64 tokens."""
 
@@ -111,20 +120,25 @@ def aligned_split_from_mapping(fields: Mapping[str, Any], *, split_name: str) ->
 def load_aligned_dataset(archive: ArchiveReader) -> AlignedDataset:
     """Load the sole selected Attachment 2 feature version from the archive stream."""
 
-    with archive.open_member(ALIGNED_50_MEMBER) as stream:
-        payload = pickle.load(stream)
-    if not isinstance(payload, Mapping):
-        raise DataContractError("aligned_50.pkl: expected a mapping of standard splits")
-    splits: dict[str, AlignedSplit] = {}
-    for split_name in ("train", "valid", "test"):
-        fields = payload.get(split_name)
-        if not isinstance(fields, Mapping):
-            raise DataContractError(f"aligned_50.pkl: missing mapping split {split_name}")
-        splits[split_name] = aligned_split_from_mapping(fields, split_name=split_name)
-    return AlignedDataset(train=splits["train"], valid=splits["valid"], test=splits["test"])
+    payload = _load_aligned_payload(archive)
+    return AlignedDataset(
+        train=_aligned_split_from_payload(payload, "train"),
+        valid=_aligned_split_from_payload(payload, "valid"),
+        test=_aligned_split_from_payload(payload, "test"),
+    )
 
 
-def load_attachment3_aligned(archive: ArchiveReader) -> list[Attachment3Sample]:
+def load_aligned_train_valid(archive: ArchiveReader) -> AlignedTrainValidDataset:
+    """Load only train and valid interfaces for Problem 2 model selection."""
+
+    payload = _load_aligned_payload(archive)
+    return AlignedTrainValidDataset(
+        train=_aligned_split_from_payload(payload, "train"),
+        valid=_aligned_split_from_payload(payload, "valid"),
+    )
+
+
+def load_attachment3_aligned(archive: ArchiveReader, *, require_complete: bool = False) -> list[Attachment3Sample]:
     """Read aligned Attachment 3 members in filename-number order without extraction."""
 
     members = [
@@ -134,20 +148,51 @@ def load_attachment3_aligned(archive: ArchiveReader) -> list[Attachment3Sample]:
         and "附件3-模态缺失特征样本/对齐版本/" in member.path
         and member.path.endswith(".pkl")
     ]
-    members.sort(key=lambda member: _attachment3_member_key(member.path))
     if not members:
         raise DataContractError("no aligned Attachment 3 pickle members were found")
+    numbered_members = [(_attachment3_member_key(member.path), member) for member in members]
+    counts = Counter(number for number, _ in numbered_members)
+    duplicates = sorted(number for number, count in counts.items() if count > 1)
+    if duplicates:
+        joined = ", ".join(f"{number:02d}" for number in duplicates)
+        raise DataContractError(f"duplicate aligned Attachment 3 sample numbers: {joined}")
+    if require_complete:
+        expected = set(range(1, 31))
+        actual = set(counts)
+        if actual != expected:
+            missing = ", ".join(f"{number:02d}" for number in sorted(expected - actual)) or "none"
+            unexpected = ", ".join(f"{number:02d}" for number in sorted(actual - expected)) or "none"
+            raise DataContractError(
+                "aligned Attachment 3 sample numbers must be exactly 01 through 30; "
+                f"missing={missing}; unexpected={unexpected}"
+            )
+    numbered_members.sort(key=lambda item: item[0])
 
     samples: list[Attachment3Sample] = []
-    for member in members:
+    for _, member in numbered_members:
         with archive.open_member(member.path) as stream:
             payload = pickle.load(stream)
         samples.append(_attachment3_sample_from_payload(payload, member.path))
     return samples
 
 
+def _load_aligned_payload(archive: ArchiveReader) -> Mapping[str, Any]:
+    with archive.open_member(ALIGNED_50_MEMBER) as stream:
+        payload = pickle.load(stream)
+    if not isinstance(payload, Mapping):
+        raise DataContractError("aligned_50.pkl: expected a mapping of standard splits")
+    return payload
+
+
+def _aligned_split_from_payload(payload: Mapping[str, Any], split_name: str) -> AlignedSplit:
+    fields = payload.get(split_name)
+    if not isinstance(fields, Mapping):
+        raise DataContractError(f"aligned_50.pkl: missing mapping split {split_name}")
+    return aligned_split_from_mapping(fields, split_name=split_name)
+
+
 def _attachment3_member_key(member_path: str) -> int:
-    match = re.search(r"附件3_(\d+)\.pkl$", member_path)
+    match = re.fullmatch(r"附件3_(0[1-9]|[12][0-9]|30)\.pkl", Path(member_path).name)
     if match is None:
         raise DataContractError(f"unexpected aligned Attachment 3 member name: {member_path}")
     return int(match.group(1))
@@ -211,8 +256,12 @@ def _normalise_vector(
     value: Any, name: str, sample_count: int, split_name: str, dtype: np.dtype[Any]
 ) -> np.ndarray:
     vector = np.asarray(value)
-    if vector.shape != (sample_count,) or not np.issubdtype(vector.dtype, np.number):
-        raise DataContractError(f"{split_name}: {name} must be a numeric vector of length {sample_count}")
+    if (
+        vector.shape != (sample_count,)
+        or not np.issubdtype(vector.dtype, np.number)
+        or not np.isfinite(vector).all()
+    ):
+        raise DataContractError(f"{split_name}: {name} must be a finite numeric vector of length {sample_count}")
     return vector.astype(dtype, copy=False)
 
 

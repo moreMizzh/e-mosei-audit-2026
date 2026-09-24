@@ -24,13 +24,21 @@ ModalityName = Literal["text", "audio", "vision"]
 
 @dataclass(frozen=True)
 class SyntheticDrop:
-    """One generated local unavailable interval for one sample and modality."""
+    """One generated local unavailable interval and its observed-coverage provenance."""
 
     sample_index: int
     modality: ModalityName
     start: int
     length: int
+    target_available_positions: int
+    selected_run_length: int
     fraction: float
+
+    @property
+    def actual_available_fraction(self) -> float:
+        """Return the actual share of all target-modality evidence hidden."""
+
+        return self.length / self.target_available_positions
 
 
 @dataclass(frozen=True)
@@ -114,11 +122,12 @@ def apply_contiguous_drop(
     vision = masks.vision.copy()
     fields = {"text": text, "audio": audio, "vision": vision}
     drops: list[SyntheticDrop] = []
-    for sample_index, positions in enumerate(masks.temporal):
-        runs = _true_runs(positions)
-        if not runs:
-            continue
+    for sample_index in range(masks.temporal.shape[0]):
         for modality in modalities:
+            positions = getattr(masks, modality)[sample_index]
+            runs = _true_runs(positions)
+            if not runs:
+                continue
             run_start, run_length = runs[int(rng.integers(len(runs)))]
             fraction = low if low == high else float(rng.uniform(low, high))
             length = min(run_length, max(1, math.ceil(run_length * fraction)))
@@ -131,6 +140,8 @@ def apply_contiguous_drop(
                     modality=modality,
                     start=start,
                     length=length,
+                    target_available_positions=int(positions.sum()),
+                    selected_run_length=run_length,
                     fraction=fraction,
                 )
             )
@@ -160,7 +171,8 @@ def apply_validation_scenario(masks: ModalityMasks, scenario: ValidationScenario
     vision = masks.vision.copy()
     fields = {"text": text, "audio": audio, "vision": vision}
     drops: list[SyntheticDrop] = []
-    for sample_index, positions in enumerate(masks.temporal):
+    for sample_index in range(masks.temporal.shape[0]):
+        positions = getattr(masks, scenario.modality)[sample_index]
         runs = _true_runs(positions)
         if not runs:
             continue
@@ -179,6 +191,8 @@ def apply_validation_scenario(masks: ModalityMasks, scenario: ValidationScenario
                 modality=scenario.modality,
                 start=start,
                 length=length,
+                target_available_positions=int(positions.sum()),
+                selected_run_length=run_length,
                 fraction=scenario.fraction,
             )
         )
@@ -236,4 +250,5 @@ def _true_runs(positions: np.ndarray) -> list[tuple[int, int]]:
 def _mean_and_std(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     mean = values.mean(axis=0, dtype=np.float64)
     std = values.std(axis=0, dtype=np.float64)
-    return mean.astype(np.float32), np.maximum(std, 1e-6).astype(np.float32)
+    safe_std = np.where(std < 1e-6, 1.0, std)
+    return mean.astype(np.float32), safe_std.astype(np.float32)
