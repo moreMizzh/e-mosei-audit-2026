@@ -203,6 +203,7 @@ def _q2_config(tmp_path: Path) -> Q2Config:
         fusion_variant="gated",
         text_adapter_variant="identity",
         classification_variant="flat",
+        temporal_position_variant="none",
         device="cpu",
     )
 
