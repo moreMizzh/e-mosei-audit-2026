@@ -295,6 +295,18 @@ def test_pooled_lmf_r4_constructs_with_rank_factors_and_preserves_gated_initiali
     ) == 3 * 4 * 16 * 16
 
 
+def test_pooled_lmf_r4_preserves_successor_rng_state() -> None:
+    torch.manual_seed(113)
+    MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
+    gated_successor = torch.rand(5)
+
+    torch.manual_seed(113)
+    MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0, fusion_variant="pooled_lmf_r4")
+    pooled_lmf_successor = torch.rand(5)
+
+    assert torch.equal(pooled_lmf_successor, gated_successor)
+
+
 @pytest.mark.parametrize(
     ("available",),
     [

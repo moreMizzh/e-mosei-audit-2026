@@ -146,10 +146,14 @@ class MaskAwareTemporalFusion(nn.Module):
             finally:
                 torch.set_rng_state(rng_state)
         if self.fusion_variant == "pooled_lmf_r4":
-            self.pooled_lmf_factors = nn.Parameter(torch.empty(3, _POOLED_LMF_RANK, hidden_size, hidden_size))
-            for modality_index in range(3):
-                for rank_index in range(_POOLED_LMF_RANK):
-                    nn.init.xavier_uniform_(self.pooled_lmf_factors[modality_index, rank_index])
+            rng_state = torch.get_rng_state()
+            try:
+                self.pooled_lmf_factors = nn.Parameter(torch.empty(3, _POOLED_LMF_RANK, hidden_size, hidden_size))
+                for modality_index in range(3):
+                    for rank_index in range(_POOLED_LMF_RANK):
+                        nn.init.xavier_uniform_(self.pooled_lmf_factors[modality_index, rank_index])
+            finally:
+                torch.set_rng_state(rng_state)
 
     def forward(self, *, text: torch.Tensor, audio: torch.Tensor, vision: torch.Tensor, masks: TensorMasks) -> Q2Output:
         """Return joint predictions while applying masks before fusion and pooling."""
