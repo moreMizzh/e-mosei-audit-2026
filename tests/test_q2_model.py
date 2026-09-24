@@ -437,7 +437,7 @@ def test_pooled_lmf_r4_ignores_appended_temporal_padding() -> None:
     padded_states = tuple(
         torch.cat((state, torch.full((2, 2, 16), 1_000_000.0)), dim=1) for state in states
     )
-    padded_availability = torch.ones(2, 5, 3, dtype=torch.bool)
+    padded_availability = torch.cat((availability, torch.zeros(2, 2, 3, dtype=torch.bool)), dim=1)
     padded_temporal = torch.cat((temporal, torch.zeros(2, 2, dtype=torch.bool)), dim=1)
 
     torch.testing.assert_close(
@@ -460,9 +460,9 @@ def test_pooled_lmf_r4_ignores_appended_temporal_padding() -> None:
     audio = torch.randn(2, 3, 74)
     vision = torch.randn(2, 3, 35)
     padded_masks = TensorMasks(
-        text=torch.ones(2, 5, dtype=torch.bool),
-        audio=torch.ones(2, 5, dtype=torch.bool),
-        vision=torch.ones(2, 5, dtype=torch.bool),
+        text=padded_availability[..., 0],
+        audio=padded_availability[..., 1],
+        vision=padded_availability[..., 2],
         temporal=padded_temporal,
     )
 
