@@ -347,7 +347,14 @@ def evaluate_saved_q2_valid(
     training = _manifest_mapping(manifest, "training")
     normalizer_values = _manifest_mapping(manifest, "normalizer")
     text_encoder_variant = _manifest_text_encoder_variant(training)
-    _manifest_dropout_consistency_variant(training)
+    classification_variant = _manifest_classification_variant(training)
+    dropout_consistency_variant = _manifest_dropout_consistency_variant(training)
+    classification_loss_variant = _manifest_classification_loss_variant(training)
+    validate_classification_loss_training(
+        classification_loss_variant,
+        classification_variant=classification_variant,
+        dropout_consistency_variant=dropout_consistency_variant,
+    )
     device = _resolve_device(_manifest_string(training, "device"))
     active_archive = archive or SevenZipArchive(
         Path(_manifest_string(manifest, "archive")),
@@ -375,7 +382,7 @@ def evaluate_saved_q2_valid(
         temporal_position_variant=_manifest_temporal_position_variant(training),
         temporal_pooling_variant=_manifest_temporal_pooling_variant(training),
         text_adapter_variant=_manifest_text_adapter_variant(training),
-        classification_variant=_manifest_classification_variant(training),
+        classification_variant=classification_variant,
     ).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True), strict=True)
     if text_encoder_variant == "last4_scalar_mix":
@@ -513,6 +520,14 @@ def _manifest_classification_variant(training: Mapping[str, object]) -> str:
     if "classification_variant" not in training:
         return "flat"
     return validate_classification_variant(training["classification_variant"])
+
+
+def _manifest_classification_loss_variant(training: Mapping[str, object]) -> str:
+    """Treat historical saved runs as using the original hard classification loss."""
+
+    if "classification_loss_variant" not in training:
+        return "hard_ce"
+    return validate_classification_loss_variant(training["classification_loss_variant"])
 
 
 def _manifest_dropout_consistency_variant(training: Mapping[str, object]) -> str:

@@ -1481,6 +1481,21 @@ def test_manifest_dropout_consistency_variant_defaults_and_validates() -> None:
         q2_runner._manifest_dropout_consistency_variant({"dropout_consistency_variant": "unsupported"})
 
 
+def test_manifest_classification_loss_variant_defaults_and_validates() -> None:
+    assert q2_runner._manifest_classification_loss_variant({}) == "hard_ce"
+    assert (
+        q2_runner._manifest_classification_loss_variant(
+            {"classification_loss_variant": "weighted_label_smoothing_005"}
+        )
+        == "weighted_label_smoothing_005"
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"\Aclassification_loss_variant must be one of: hard_ce, weighted_label_smoothing_005\Z",
+    ):
+        q2_runner._manifest_classification_loss_variant({"classification_loss_variant": "unsupported"})
+
+
 def test_evaluate_saved_q2_valid_reconstructs_legacy_gated_identity_without_accessing_test(monkeypatch, tmp_path: Path) -> None:
     aligned_payload = TrainValidPayloadWithInaccessibleTest(
         {
@@ -1554,6 +1569,137 @@ def test_evaluate_saved_q2_valid_reconstructs_legacy_gated_identity_without_acce
     assert observed_position_variants == ["none"]
     assert observed_pooling_variants == ["attention"]
     assert observed_strict == [True]
+
+
+def test_evaluate_saved_q2_valid_strictly_reconstructs_flat_label_smoothing_checkpoint_without_accessing_test(
+    monkeypatch, tmp_path: Path
+) -> None:
+    archive = RunnerArchive(
+        {
+            ALIGNED_50_MEMBER: TrainValidPayloadWithInaccessibleTest(
+                {
+                    "train": runner_split([0, 1, 2]),
+                    "valid": runner_split([0, 1, 2]),
+                    "test": {"not": "an accessible Q2 runtime input"},
+                }
+            )
+        }
+    )
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-label-smoothing-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0, classification_variant="flat")
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "classification_variant": "flat",
+                    "classification_loss_variant": "weighted_label_smoothing_005",
+                    "dropout_consistency_variant": "none",
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed_variants: list[str] = []
+    observed_strict: list[bool] = []
+    original_model_constructor = q2_runner.MaskAwareTemporalFusion
+    original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
+
+    def recording_model_constructor(*args, **kwargs):
+        observed_variants.append(kwargs["classification_variant"])
+        return original_model_constructor(*args, **kwargs)
+
+    def recording_load_state_dict(self, *args, **kwargs):
+        observed_strict.append(kwargs["strict"])
+        return original_load_state_dict(self, *args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", recording_model_constructor)
+    monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "label-smoothing-valid-report.json",
+        archive=archive,
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert report["sample_count"] == 3
+    assert archive.verify_count == 1
+    assert observed_variants == ["flat"]
+    assert observed_strict == [True]
+
+
+@pytest.mark.parametrize(
+    ("classification_loss_variant", "classification_variant", "dropout_consistency_variant", "message"),
+    [
+        (
+            "unsupported",
+            "flat",
+            "none",
+            "classification_loss_variant must be one of: hard_ce, weighted_label_smoothing_005",
+        ),
+        (
+            "weighted_label_smoothing_005",
+            "corn",
+            "none",
+            "weighted_label_smoothing_005 requires classification_variant=flat",
+        ),
+        (
+            "weighted_label_smoothing_005",
+            "flat",
+            "rdrop_alpha_1",
+            "weighted_label_smoothing_005 cannot be combined with rdrop_alpha_1",
+        ),
+    ],
+)
+def test_evaluate_saved_q2_valid_rejects_invalid_classification_loss_semantic_before_archive(
+    tmp_path: Path,
+    classification_loss_variant: str,
+    classification_variant: str,
+    dropout_consistency_variant: str,
+    message: str,
+) -> None:
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-invalid-classification-loss-run"
+    _write_saved_scalar_mix_run(run_dir, config, text_encoder_variant="last_hidden_state")
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["training"].update(
+        {
+            "classification_loss_variant": classification_loss_variant,
+            "classification_variant": classification_variant,
+            "dropout_consistency_variant": dropout_consistency_variant,
+            "dropout": 0.1 if dropout_consistency_variant == "rdrop_alpha_1" else 0.0,
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=rf"\A{message}\Z"):
+        evaluate_saved_q2_valid(
+            run_dir,
+            tmp_path / "invalid-classification-loss-valid-report.json",
+            archive=ArchiveAccessSentinel(),
+            token_encoder=TinyTokenEncoder(),
+        )
+
+    assert not (tmp_path / "invalid-classification-loss-valid-report.json").exists()
 
 
 def test_evaluate_saved_q2_valid_strictly_reconstructs_attention_availability_checkpoint(
