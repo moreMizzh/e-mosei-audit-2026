@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from contextlib import contextmanager
+from dataclasses import replace
 from io import BytesIO
 import json
 from pathlib import Path
@@ -28,6 +29,7 @@ from e_mosei_audit.q2.runner import (
     run_q2,
     write_predictions,
 )
+import e_mosei_audit.q2.runner as q2_runner
 
 
 def test_joint_loss_applies_configured_regression_weight() -> None:
@@ -239,6 +241,32 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     assert archive.verify_count == 1
     assert "缺失影响汇总" in report
     assert "最不利 macro-F1 场景" in report
+
+
+def test_run_q2_forwards_configured_regression_loss_weight_to_training(monkeypatch, tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a training or validation input"},
+        }
+    }
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+    observed_weights: list[float] = []
+    original_joint_loss = q2_runner._joint_loss
+
+    def recording_joint_loss(*args, **kwargs):
+        observed_weights.append(kwargs["regression_loss_weight"])
+        return original_joint_loss(*args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "_joint_loss", recording_joint_loss)
+    config = replace(runner_config(tmp_path), regression_loss_weight=0.25)
+
+    run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
+
+    assert observed_weights == [0.25]
 
 
 def test_run_q2_does_not_validate_or_use_attachment2_test_split(tmp_path: Path) -> None:
