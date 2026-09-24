@@ -26,6 +26,7 @@ from e_mosei_audit.q2.config import (
     validate_temporal_position_variant,
     validate_temporal_pooling_variant,
     validate_text_adapter_variant,
+    validate_text_encoder_variant,
 )
 from e_mosei_audit.q2.data import AlignedSplit, Attachment3Sample, load_aligned_train_valid, load_attachment3_aligned
 from e_mosei_audit.q2.missingness import (
@@ -186,7 +187,11 @@ def run_q2(
     attachment3 = load_attachment3_aligned(active_archive, require_complete=True)
     device = _resolve_device(config.device)
     _seed_everything(config.seed)
-    active_encoder = token_encoder or FrozenBertEncoder.from_local(config.bert_model, device=device)
+    active_encoder = token_encoder or FrozenBertEncoder.from_local(
+        config.bert_model,
+        device=device,
+        text_encoder_variant=config.text_encoder_variant,
+    )
     train_masks = observed_masks(dataset.train.text_bert, dataset.train.audio, dataset.train.vision)
     normalizer = fit_normalizer(dataset.train.audio, dataset.train.vision, train_masks)
     valid_masks = observed_masks(dataset.valid.text_bert, dataset.valid.audio, dataset.valid.vision)
@@ -201,7 +206,11 @@ def run_q2(
         text_adapter_variant=config.text_adapter_variant,
         classification_variant=config.classification_variant,
     ).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    optimizer = torch.optim.AdamW(
+        (*model.parameters(), *_encoder_trainable_parameters(active_encoder, config.text_encoder_variant)),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
     weights = _class_weights(
         dataset.train.classification_labels,
         device,
@@ -210,6 +219,7 @@ def run_q2(
     best_epoch = -1
     best_metrics: dict[str, float | None] | None = None
     best_state: dict[str, torch.Tensor] | None = None
+    best_encoder_state: dict[str, torch.Tensor] | None = None
     generator = np.random.default_rng(config.seed)
     for epoch in range(config.epochs):
         _train_epoch(
@@ -232,9 +242,11 @@ def run_q2(
             best_epoch = epoch
             best_metrics = metrics
             best_state = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
-    if best_state is None or best_metrics is None:
+            best_encoder_state = _encoder_trainable_state(active_encoder, config.text_encoder_variant)
+    if best_state is None or best_metrics is None or best_encoder_state is None:
         raise RuntimeError("no Q2 training epoch produced validation metrics")
     model.load_state_dict(best_state)
+    _restore_encoder_trainable_state(active_encoder, config.text_encoder_variant, best_encoder_state)
     _, valid_classes, _ = _evaluate(
         model, active_encoder, dataset.valid, valid_masks, normalizer, config.batch_size, device
     )
@@ -248,6 +260,8 @@ def run_q2(
         config,
         model,
         normalizer,
+        text_encoder_variant=config.text_encoder_variant,
+        encoder_state=best_encoder_state,
         best_epoch=best_epoch,
         clean_metrics=best_metrics,
         valid_report=valid_report,
@@ -277,7 +291,11 @@ def check_q2(
     attachment3 = load_attachment3_aligned(active_archive, require_complete=True)
     device = _resolve_device(config.device)
     if token_encoder is None:
-        FrozenBertEncoder.from_local(config.bert_model, device=device)
+        FrozenBertEncoder.from_local(
+            config.bert_model,
+            device=device,
+            text_encoder_variant=config.text_encoder_variant,
+        )
     return {
         "train_count": dataset.train.sample_count,
         "valid_count": dataset.valid.sample_count,
@@ -306,6 +324,7 @@ def evaluate_saved_q2_valid(
         raise ValueError("run manifest must be a mapping")
     training = _manifest_mapping(manifest, "training")
     normalizer_values = _manifest_mapping(manifest, "normalizer")
+    text_encoder_variant = _manifest_text_encoder_variant(training)
     device = _resolve_device(_manifest_string(training, "device"))
     active_archive = archive or SevenZipArchive(
         Path(_manifest_string(manifest, "archive")),
@@ -314,7 +333,9 @@ def evaluate_saved_q2_valid(
     active_archive.verify()
     dataset = load_aligned_train_valid(active_archive)
     encoder = token_encoder or FrozenBertEncoder.from_local(
-        Path(_manifest_string(manifest, "bert_model")), device=device
+        Path(_manifest_string(manifest, "bert_model")),
+        device=device,
+        text_encoder_variant=text_encoder_variant,
     )
     normalizer = FeatureNormalizer(
         audio_mean=_manifest_normalizer_array(normalizer_values, "audio_mean", 74),
@@ -334,6 +355,15 @@ def evaluate_saved_q2_valid(
         classification_variant=_manifest_classification_variant(training),
     ).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True), strict=True)
+    if text_encoder_variant == "last4_scalar_mix":
+        encoder_state_path = resolved_run_dir / "text_encoder_state.pt"
+        if not encoder_state_path.is_file():
+            raise ValueError("scalar-mix run_dir must contain text_encoder_state.pt")
+        _restore_encoder_trainable_state(
+            encoder,
+            text_encoder_variant,
+            torch.load(encoder_state_path, map_location="cpu", weights_only=True),
+        )
     valid_masks = observed_masks(dataset.valid.text_bert, dataset.valid.audio, dataset.valid.vision)
     metrics, predicted_classes, predicted_scores = _evaluate(
         model,
@@ -446,6 +476,14 @@ def _manifest_text_adapter_variant(training: Mapping[str, object]) -> str:
     return validate_text_adapter_variant(training["text_adapter_variant"])
 
 
+def _manifest_text_encoder_variant(training: Mapping[str, object]) -> str:
+    """Treat historical saved runs as using frozen BERT's final hidden layer."""
+
+    if "text_encoder_variant" not in training:
+        return "last_hidden_state"
+    return validate_text_encoder_variant(training["text_encoder_variant"])
+
+
 def _manifest_classification_variant(training: Mapping[str, object]) -> str:
     """Treat historical saved runs as using the original flat classifier."""
 
@@ -472,6 +510,54 @@ def _resolve_device(value: str) -> torch.device:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("Q2 config requests CUDA but torch.cuda.is_available() is false")
     return device
+
+
+def _encoder_trainable_parameters(encoder: TokenEncoder, text_encoder_variant: str) -> tuple[nn.Parameter, ...]:
+    if text_encoder_variant == "last_hidden_state":
+        return ()
+    parameters = _scalar_mix_encoder_method(encoder, "trainable_parameters")()
+    _scalar_mix_encoder_method(encoder, "trainable_state_dict")
+    _scalar_mix_encoder_method(encoder, "load_trainable_state_dict")
+    if not isinstance(parameters, tuple) or any(not isinstance(parameter, nn.Parameter) for parameter in parameters):
+        raise ValueError("last4_scalar_mix encoder trainable_parameters() must return parameter tuple")
+    if sum(parameter.numel() for parameter in parameters) != 5:
+        raise ValueError("last4_scalar_mix encoder must expose exactly five trainable values")
+    return parameters
+
+
+def _encoder_trainable_state(encoder: TokenEncoder, text_encoder_variant: str) -> dict[str, torch.Tensor]:
+    if text_encoder_variant == "last_hidden_state":
+        return {}
+    state = _scalar_mix_encoder_method(encoder, "trainable_state_dict")()
+    if not isinstance(state, Mapping) or set(state) != {"layer_logits", "scale"}:
+        raise ValueError("scalar-mix trainable state must contain exactly: layer_logits, scale")
+    expected_shapes = {"layer_logits": (4,), "scale": ()}
+    copied: dict[str, torch.Tensor] = {}
+    for name, shape in expected_shapes.items():
+        value = state[name]
+        if not isinstance(value, torch.Tensor) or value.shape != shape or not torch.isfinite(value).all():
+            raise ValueError(f"scalar-mix state {name} must be a finite tensor with shape {shape}")
+        copied[name] = value.detach().cpu().clone()
+    return copied
+
+
+def _restore_encoder_trainable_state(
+    encoder: TokenEncoder,
+    text_encoder_variant: str,
+    state: object,
+) -> None:
+    if text_encoder_variant == "last_hidden_state":
+        return
+    if not isinstance(state, Mapping):
+        raise ValueError("scalar-mix trainable state must be a mapping")
+    _scalar_mix_encoder_method(encoder, "load_trainable_state_dict")(state)
+
+
+def _scalar_mix_encoder_method(encoder: TokenEncoder, name: str) -> Any:
+    method = getattr(encoder, name, None)
+    if not callable(method):
+        raise ValueError(f"last4_scalar_mix encoder must define callable {name}()")
+    return method
 
 
 def _seed_everything(seed: int) -> None:
@@ -747,6 +833,8 @@ def _write_run_outputs(
     model: MaskAwareTemporalFusion,
     normalizer: FeatureNormalizer,
     *,
+    text_encoder_variant: str,
+    encoder_state: Mapping[str, torch.Tensor],
     best_epoch: int,
     clean_metrics: dict[str, float | None],
     valid_report: dict[str, object],
@@ -784,6 +872,7 @@ def _write_run_outputs(
                 "classification_variant": config.classification_variant,
                 "temporal_position_variant": config.temporal_position_variant,
                 "temporal_pooling_variant": config.temporal_pooling_variant,
+                "text_encoder_variant": text_encoder_variant,
                 "device": config.device,
                 "synthetic_missingness": {
                     "enabled": config.synthetic_missingness_enabled,
@@ -798,6 +887,8 @@ def _write_run_outputs(
             manifest["architecture"] = {"pooled_lmf_rank": 4}
         _write_json(staging / "run_manifest.json", manifest)
         torch.save(model.state_dict(), staging / "model.pt")
+        if text_encoder_variant == "last4_scalar_mix":
+            torch.save(dict(encoder_state), staging / "text_encoder_state.pt")
         (staging / "audit_report.md").write_text(
             _render_audit_report(best_epoch, clean_metrics, scenario_rows), encoding="utf-8"
         )

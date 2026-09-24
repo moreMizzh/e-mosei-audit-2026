@@ -284,6 +284,43 @@ class TinyTokenEncoder:
         return embeddings
 
 
+class ScalarMixTokenEncoder:
+    """Small trainable stand-in for the frozen scalar-mix encoder boundary."""
+
+    def __init__(self) -> None:
+        self.layer_logits = torch.nn.Parameter(torch.zeros(4))
+        self.scale = torch.nn.Parameter(torch.ones(()))
+        self.loaded_states: list[dict[str, torch.Tensor]] = []
+
+    def encode(self, token_rows: torch.Tensor) -> torch.Tensor:
+        weights = torch.softmax(self.layer_logits, dim=0)
+        multiplier = self.scale * (weights * torch.arange(1, 5, device=token_rows.device)).sum()
+        return multiplier * token_rows[:, 0, :].to(torch.float32).unsqueeze(-1).expand(-1, -1, 768)
+
+    def trainable_parameters(self) -> tuple[torch.nn.Parameter, ...]:
+        return (self.layer_logits, self.scale)
+
+    def trainable_state_dict(self) -> dict[str, torch.Tensor]:
+        return {
+            "layer_logits": self.layer_logits.detach().cpu().clone(),
+            "scale": self.scale.detach().cpu().clone(),
+        }
+
+    def load_trainable_state_dict(self, state: object) -> None:
+        if not isinstance(state, dict) or set(state) != {"layer_logits", "scale"}:
+            raise ValueError("scalar-mix trainable state must contain exactly: layer_logits, scale")
+        expected = {"layer_logits": (4,), "scale": ()}
+        for name, shape in expected.items():
+            value = state[name]
+            if not isinstance(value, torch.Tensor) or value.shape != shape or not torch.isfinite(value).all():
+                raise ValueError(f"scalar-mix state {name} must be a finite tensor with shape {shape}")
+        restored = {name: state[name].detach().cpu().clone() for name in expected}
+        self.loaded_states.append(restored)
+        with torch.no_grad():
+            self.layer_logits.copy_(state["layer_logits"])
+            self.scale.copy_(state["scale"])
+
+
 def runner_split(labels: list[int]) -> dict[str, object]:
     sample_count = len(labels)
     tokens = np.zeros((sample_count, 3, 50), dtype=np.int64)
@@ -348,6 +385,21 @@ def runner_config(tmp_path: Path) -> Q2Config:
     )
 
 
+def runner_archive_with_inaccessible_test() -> RunnerArchive:
+    aligned_payload = TrainValidPayloadWithInaccessibleTest(
+        {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "an accessible Q2 runtime input"},
+        }
+    )
+    members: dict[str, object] = {ALIGNED_50_MEMBER: aligned_payload}
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+    return RunnerArchive(members)
+
+
 def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path) -> None:
     members: dict[str, object] = {
         ALIGNED_50_MEMBER: {
@@ -392,6 +444,7 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     } <= set(scenarios[0])
     assert all(float(row["actual_available_fraction"]) > 0 for row in scenarios)
     assert (config.output_dir / "model.pt").is_file()
+    assert not (config.output_dir / "text_encoder_state.pt").exists()
     assert archive.verify_count == 1
     assert "缺失影响汇总" in report
     assert "最不利 macro-F1 场景" in report
@@ -2023,6 +2076,264 @@ def test_evaluate_saved_q2_valid_rejects_manifest_with_missing_normalizer_field(
             tmp_path / "valid-report.json",
             archive=archive,
             token_encoder=TinyTokenEncoder(),
+        )
+
+
+def test_run_q2_passes_scalar_mix_variant_to_local_encoder(monkeypatch, tmp_path: Path) -> None:
+    config = replace(runner_config(tmp_path), text_encoder_variant="last4_scalar_mix")
+    observed_variants: list[str] = []
+    encoder = ScalarMixTokenEncoder()
+
+    class RecordingEncoderFactory:
+        @classmethod
+        def from_local(cls, model_path: Path, *, device: torch.device, text_encoder_variant: str) -> ScalarMixTokenEncoder:
+            assert model_path == config.bert_model
+            assert device == torch.device("cpu")
+            observed_variants.append(text_encoder_variant)
+            return encoder
+
+    monkeypatch.setattr(q2_runner, "FrozenBertEncoder", RecordingEncoderFactory)
+
+    summary = run_q2(config, archive=runner_archive_with_inaccessible_test())
+
+    assert summary["best_epoch"] == 0
+    assert observed_variants == ["last4_scalar_mix"]
+
+
+def test_run_q2_adds_five_scalar_mix_values_to_adamw_and_none_for_default(monkeypatch, tmp_path: Path) -> None:
+    config = runner_config(tmp_path)
+    scalar_encoder = ScalarMixTokenEncoder()
+    parameter_value_counts: list[int] = []
+    original_adamw = torch.optim.AdamW
+
+    def recording_adamw(parameters, *args, **kwargs):
+        parameter_values = tuple(parameters)
+        parameter_value_counts.append(sum(parameter.numel() for parameter in parameter_values))
+        return original_adamw(parameter_values, *args, **kwargs)
+
+    monkeypatch.setattr(q2_runner.torch.optim, "AdamW", recording_adamw)
+
+    run_q2(
+        replace(config, output_dir=tmp_path / "scalar-mix-output", text_encoder_variant="last4_scalar_mix"),
+        archive=runner_archive_with_inaccessible_test(),
+        token_encoder=scalar_encoder,
+    )
+    run_q2(
+        replace(config, output_dir=tmp_path / "default-output", text_encoder_variant="last_hidden_state"),
+        archive=runner_archive_with_inaccessible_test(),
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert sum(parameter.numel() for parameter in scalar_encoder.trainable_parameters()) == 5
+    assert parameter_value_counts[0] == parameter_value_counts[1] + 5
+
+
+def test_run_q2_rejects_incomplete_scalar_mix_encoder_before_training(monkeypatch, tmp_path: Path) -> None:
+    class IncompleteScalarMixTokenEncoder(TinyTokenEncoder):
+        def __init__(self) -> None:
+            self.layer_logits = torch.nn.Parameter(torch.zeros(4))
+            self.scale = torch.nn.Parameter(torch.ones(()))
+
+        def trainable_parameters(self) -> tuple[torch.nn.Parameter, ...]:
+            return (self.layer_logits, self.scale)
+
+    def fail_if_training_starts(*args, **kwargs):
+        raise AssertionError("incomplete scalar-mix encoder must be rejected before training")
+
+    monkeypatch.setattr(q2_runner, "_train_epoch", fail_if_training_starts)
+
+    with pytest.raises(ValueError, match="trainable_state_dict"):
+        run_q2(
+            replace(runner_config(tmp_path), text_encoder_variant="last4_scalar_mix"),
+            archive=runner_archive_with_inaccessible_test(),
+            token_encoder=IncompleteScalarMixTokenEncoder(),
+        )
+
+
+def test_run_q2_persists_and_restores_scalar_mix_state_without_accessing_test(tmp_path: Path) -> None:
+    config = replace(runner_config(tmp_path), text_encoder_variant="last4_scalar_mix")
+    encoder = ScalarMixTokenEncoder()
+
+    summary = run_q2(config, archive=runner_archive_with_inaccessible_test(), token_encoder=encoder)
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    encoder_state = torch.load(config.output_dir / "text_encoder_state.pt", weights_only=True)
+    with (config.output_dir / "validation_scenarios.csv").open(encoding="utf-8", newline="") as stream:
+        scenarios = list(csv.DictReader(stream))
+    with (config.output_dir / "attachment3_predictions.csv").open(encoding="utf-8", newline="") as stream:
+        predictions = list(csv.DictReader(stream))
+
+    assert summary["best_epoch"] == 0
+    assert manifest["training"]["text_encoder_variant"] == "last4_scalar_mix"
+    assert set(encoder_state) == {"layer_logits", "scale"}
+    assert len(encoder.loaded_states) == 1
+    assert all(torch.equal(encoder_state[name], encoder.loaded_states[0][name]) for name in encoder_state)
+    assert len(scenarios) == 27
+    assert len(predictions) == 30
+
+
+def _write_saved_scalar_mix_run(
+    run_dir: Path,
+    config: Q2Config,
+    *,
+    text_encoder_variant: str = "last4_scalar_mix",
+) -> None:
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "device": "cpu",
+                    "text_encoder_variant": text_encoder_variant,
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_evaluate_saved_q2_valid_strictly_restores_scalar_mix_encoder_state(monkeypatch, tmp_path: Path) -> None:
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-scalar-mix-run"
+    _write_saved_scalar_mix_run(run_dir, config)
+    expected_state = {
+        "layer_logits": torch.tensor([0.1, -0.2, 0.3, -0.4]),
+        "scale": torch.tensor(1.5),
+    }
+    torch.save(expected_state, run_dir / "text_encoder_state.pt")
+    encoder = ScalarMixTokenEncoder()
+    observed_variants: list[str] = []
+    observed_strict: list[bool] = []
+    original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
+
+    class RecordingEncoderFactory:
+        @classmethod
+        def from_local(cls, model_path: Path, *, device: torch.device, text_encoder_variant: str) -> ScalarMixTokenEncoder:
+            assert model_path == config.bert_model
+            assert device == torch.device("cpu")
+            observed_variants.append(text_encoder_variant)
+            return encoder
+
+    def recording_load_state_dict(self, *args, **kwargs):
+        observed_strict.append(kwargs["strict"])
+        return original_load_state_dict(self, *args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "FrozenBertEncoder", RecordingEncoderFactory)
+    monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "scalar-mix-valid-report.json",
+        archive=RunnerArchive(
+            {
+                ALIGNED_50_MEMBER: TrainValidPayloadWithInaccessibleTest(
+                    {
+                        "train": runner_split([0, 1, 2]),
+                        "valid": runner_split([0, 1, 2]),
+                        "test": {"not": "an accessible Q2 runtime input"},
+                    }
+                )
+            }
+        ),
+    )
+
+    assert report["sample_count"] == 3
+    assert observed_variants == ["last4_scalar_mix"]
+    assert observed_strict == [True]
+    assert len(encoder.loaded_states) == 1
+    assert all(torch.equal(encoder.loaded_states[0][name], expected_state[name]) for name in expected_state)
+
+
+def test_evaluate_saved_q2_valid_defaults_historical_manifest_to_final_layer_without_state_file(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "historical-run"
+    _write_saved_scalar_mix_run(run_dir, config)
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["training"]["text_encoder_variant"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    observed_variants: list[str] = []
+
+    class RecordingEncoderFactory:
+        @classmethod
+        def from_local(cls, model_path: Path, *, device: torch.device, text_encoder_variant: str) -> TinyTokenEncoder:
+            observed_variants.append(text_encoder_variant)
+            return TinyTokenEncoder()
+
+    monkeypatch.setattr(q2_runner, "FrozenBertEncoder", RecordingEncoderFactory)
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "historical-valid-report.json",
+        archive=RunnerArchive(
+            {
+                ALIGNED_50_MEMBER: TrainValidPayloadWithInaccessibleTest(
+                    {
+                        "train": runner_split([0, 1, 2]),
+                        "valid": runner_split([0, 1, 2]),
+                        "test": {"not": "an accessible Q2 runtime input"},
+                    }
+                )
+            }
+        ),
+    )
+
+    assert report["sample_count"] == 3
+    assert observed_variants == ["last_hidden_state"]
+    assert not (run_dir / "text_encoder_state.pt").exists()
+
+
+@pytest.mark.parametrize(
+    ("variant", "state", "message"),
+    [
+        ("unsupported", None, "text_encoder_variant must be one of: last_hidden_state, last4_scalar_mix"),
+        ("last4_scalar_mix", None, "text_encoder_state.pt"),
+        ("last4_scalar_mix", {"layer_logits": torch.zeros(4)}, "scalar-mix trainable state"),
+    ],
+)
+def test_evaluate_saved_q2_valid_rejects_invalid_or_unrestorable_scalar_mix_state(
+    tmp_path: Path, variant: str, state: object, message: str
+) -> None:
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "invalid-scalar-mix-run"
+    _write_saved_scalar_mix_run(run_dir, config, text_encoder_variant=variant)
+    if state is not None:
+        torch.save(state, run_dir / "text_encoder_state.pt")
+
+    with pytest.raises(ValueError, match=message):
+        evaluate_saved_q2_valid(
+            run_dir,
+            tmp_path / "invalid-scalar-mix-report.json",
+            archive=RunnerArchive(
+                {
+                    ALIGNED_50_MEMBER: TrainValidPayloadWithInaccessibleTest(
+                        {
+                            "train": runner_split([0, 1, 2]),
+                            "valid": runner_split([0, 1, 2]),
+                            "test": {"not": "an accessible Q2 runtime input"},
+                        }
+                    )
+                }
+            ),
+            token_encoder=ScalarMixTokenEncoder(),
         )
 
 
