@@ -10,6 +10,8 @@ from pathlib import Path
 from .archive import ArchiveError, SevenZipArchive
 from .q1.config import load_config
 from .q1.runner import run_q1
+from .q2.config import load_q2_config
+from .q2.runner import check_q2, run_q2
 from .workflow import run_audit
 
 
@@ -50,6 +52,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         return 1 if summary.get("failed_count", 0) else 0
 
+    if arguments.command == "train-q2":
+        try:
+            config = load_q2_config(Path(arguments.config))
+            summary = check_q2(config) if arguments.check else run_q2(config)
+        except (ArchiveError, FileExistsError, OSError, RuntimeError, ValueError) as error:
+            print(f"e-mosei-audit: {error}", file=sys.stderr)
+            return 2
+
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        return 0
+
     parser.error(f"unsupported command: {arguments.command}")
 
 
@@ -70,6 +83,11 @@ def _build_parser() -> argparse.ArgumentParser:
     extract.add_argument(
         "--limit", type=int, help="process only the first N audited rows for a smoke run"
     )
+    q2 = commands.add_parser(
+        "train-q2", help="train the robust aligned multimodal model and infer Attachment 3"
+    )
+    q2.add_argument("--config", required=True, help="TOML path with explicit local Q2 paths and parameters")
+    q2.add_argument("--check", action="store_true", help="verify Q2 inputs without training or writing an output")
     return parser
 
 

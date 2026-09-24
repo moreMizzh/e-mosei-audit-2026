@@ -1,0 +1,17 @@
+[paths]
+archive = "E题数据 (2).zip"
+seven_zip = ".tools/bin/7za"
+bert_model = ".tools/models/bert-base-uncased"
+output_dir = "artifacts/q2-default"
+
+[training]
+seed = 20260924
+epochs = 30
+batch_size = 64
+learning_rate = 0.001
+weight_decay = 0.0001
+hidden_size = 128
+heads = 4
+layers = 2
+dropout = 0.1
+device = "cuda"
