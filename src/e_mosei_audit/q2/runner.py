@@ -505,12 +505,34 @@ def _joint_loss(
     regression_loss_weight: float,
     polarity_consistency_loss_weight: float,
 ) -> torch.Tensor:
-    classification = nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
+    classification = _classification_loss(output, labels, class_weights)
     regression = nn.functional.smooth_l1_loss(output.score, scores)
     probabilities = torch.softmax(output.logits, dim=1)
     expected_polarity = probabilities @ output.logits.new_tensor([-1.0, 0.0, 1.0])
     consistency = nn.functional.smooth_l1_loss(output.score / 3.0, expected_polarity)
     return classification + regression_loss_weight * regression + polarity_consistency_loss_weight * consistency
+
+
+def _classification_loss(output: Q2Output, labels: torch.Tensor, class_weights: torch.Tensor) -> torch.Tensor:
+    """Use flat cross-entropy or CORN's two conditional binary objectives."""
+
+    if output.ordinal_logits is None:
+        return nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
+    ordinal_logits = output.ordinal_logits
+    first = nn.functional.binary_cross_entropy_with_logits(
+        ordinal_logits[:, 0],
+        (labels > 0).to(ordinal_logits.dtype),
+    )
+    active = labels > 0
+    terms = [first]
+    if bool(active.any()):
+        terms.append(
+            nn.functional.binary_cross_entropy_with_logits(
+                ordinal_logits[active, 1],
+                (labels[active] > 1).to(ordinal_logits.dtype),
+            )
+        )
+    return torch.stack(terms).mean()
 
 
 def _evaluate(

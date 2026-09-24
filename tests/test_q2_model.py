@@ -116,6 +116,68 @@ def test_mask_aware_fusion_returns_three_logits_and_bounded_score() -> None:
     assert torch.all(output.score >= -3)
 
 
+@pytest.mark.parametrize("fusion_variant", ["gated", "mag_lite", "mult_lite"])
+def test_corn_classifier_returns_normalized_three_class_log_probabilities(fusion_variant: str) -> None:
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant=fusion_variant,
+        classification_variant="corn",
+    )
+
+    output = model(
+        text=torch.randn(2, 50, 768),
+        audio=torch.randn(2, 50, 74),
+        vision=torch.randn(2, 50, 35),
+        masks=example_masks(),
+    )
+
+    assert output.ordinal_logits is not None
+    assert output.logits.shape == (2, 3)
+    assert output.ordinal_logits.shape == (2, 2)
+    assert torch.isfinite(output.logits).all()
+    assert torch.isfinite(output.ordinal_logits).all()
+    assert torch.allclose(torch.exp(output.logits).sum(dim=1), torch.ones(2))
+    assert torch.isin(output.logits.argmax(dim=1), torch.tensor([0, 1, 2])).all()
+    assert torch.all(output.score <= 3)
+    assert torch.all(output.score >= -3)
+
+
+@pytest.mark.parametrize("fusion_variant", ["gated", "mag_lite", "mult_lite"])
+def test_corn_classifier_ignores_unavailable_raw_modality_values(fusion_variant: str) -> None:
+    torch.manual_seed(61)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant=fusion_variant,
+        classification_variant="corn",
+    ).eval()
+    masks = example_masks(audio_available=False)
+    text = torch.randn(2, 50, 768)
+    vision = torch.randn(2, 50, 35)
+
+    with torch.no_grad():
+        baseline = model(text=text, audio=torch.zeros(2, 50, 74), vision=vision, masks=masks)
+        changed = model(text=text, audio=torch.full((2, 50, 74), 1_000_000.0), vision=vision, masks=masks)
+
+    assert baseline.ordinal_logits is not None
+    assert changed.ordinal_logits is not None
+    assert torch.equal(changed.logits, baseline.logits)
+    assert torch.equal(changed.ordinal_logits, baseline.ordinal_logits)
+    assert torch.equal(changed.score, baseline.score)
+    assert torch.equal(changed.gates, baseline.gates)
+    assert torch.equal(changed.temporal_attention, baseline.temporal_attention)
+
+
+def test_corn_classifier_rejects_shared_late_expert_fusion() -> None:
+    with pytest.raises(ValueError, match="corn classification is unsupported with late_expert_shared fusion"):
+        MaskAwareTemporalFusion(fusion_variant="late_expert_shared", classification_variant="corn")
+
+
 def test_mask_aware_fusion_accepts_late_expert_shared_variant() -> None:
     model = MaskAwareTemporalFusion(fusion_variant="late_expert_shared")
 

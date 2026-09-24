@@ -9,7 +9,11 @@ from typing import Any
 import torch
 from torch import nn
 
-from e_mosei_audit.q2.config import validate_fusion_variant, validate_text_adapter_variant
+from e_mosei_audit.q2.config import (
+    validate_classification_variant,
+    validate_fusion_variant,
+    validate_text_adapter_variant,
+)
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,7 @@ class Q2Output:
     gates: torch.Tensor
     temporal_attention: torch.Tensor
     expert_weights: torch.Tensor | None = None
+    ordinal_logits: torch.Tensor | None = None
 
 
 class FrozenBertEncoder:
@@ -87,12 +92,16 @@ class MaskAwareTemporalFusion(nn.Module):
         dropout: float = 0.1,
         fusion_variant: str = "gated",
         text_adapter_variant: str = "identity",
+        classification_variant: str = "flat",
     ) -> None:
         super().__init__()
         if hidden_size < 1 or heads < 1 or layers < 1 or hidden_size % heads:
             raise ValueError("hidden_size must be positive, layers/heads positive, and hidden_size divisible by heads")
         self.fusion_variant = validate_fusion_variant(fusion_variant)
         self.text_adapter_variant = validate_text_adapter_variant(text_adapter_variant)
+        self.classification_variant = validate_classification_variant(classification_variant)
+        if self.fusion_variant == "late_expert_shared" and self.classification_variant == "corn":
+            raise ValueError("corn classification is unsupported with late_expert_shared fusion")
         self.text_projection = _projection(768, hidden_size)
         self.audio_projection = _projection(74, hidden_size)
         self.vision_projection = _projection(35, hidden_size)
@@ -119,7 +128,8 @@ class MaskAwareTemporalFusion(nn.Module):
         )
         self.temporal_encoder = nn.TransformerEncoder(layer, num_layers=layers, enable_nested_tensor=False)
         self.pool_attention = nn.Linear(hidden_size, 1)
-        self.classifier = nn.Sequential(nn.LayerNorm(hidden_size + 3), nn.Linear(hidden_size + 3, 3))
+        classifier_size = 2 if self.classification_variant == "corn" else 3
+        self.classifier = nn.Sequential(nn.LayerNorm(hidden_size + 3), nn.Linear(hidden_size + 3, classifier_size))
         self.regressor = nn.Sequential(nn.LayerNorm(hidden_size + 3), nn.Linear(hidden_size + 3, 1))
         if self.text_adapter_variant == "houlsby_output_b32":
             rng_state = torch.get_rng_state()
@@ -211,12 +221,32 @@ class MaskAwareTemporalFusion(nn.Module):
         availability_fraction = (availability & temporal.unsqueeze(-1)).sum(dim=1).to(text.dtype)
         availability_fraction = availability_fraction / temporal.sum(dim=1, keepdim=True).to(text.dtype)
         representation = torch.cat((pooled, availability_fraction), dim=1)
+        logits, ordinal_logits = self._classify(representation)
         return Q2Output(
-            logits=self.classifier(representation),
+            logits=logits,
             score=3.0 * torch.tanh(self.regressor(representation).squeeze(-1)),
             gates=gates,
             temporal_attention=temporal_attention,
+            ordinal_logits=ordinal_logits,
         )
+
+    def _classify(self, representation: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Return flat logits or CORN's derived three-class log-probabilities."""
+
+        classification = self.classifier(representation)
+        if self.classification_variant == "flat":
+            return classification, None
+        conditional = torch.sigmoid(classification)
+        probabilities = torch.stack(
+            (
+                1.0 - conditional[:, 0],
+                conditional[:, 0] * (1.0 - conditional[:, 1]),
+                conditional[:, 0] * conditional[:, 1],
+            ),
+            dim=1,
+        )
+        logits = probabilities.clamp_min(torch.finfo(probabilities.dtype).tiny).log()
+        return logits, classification
 
     def _forward_late_expert_shared(
         self,

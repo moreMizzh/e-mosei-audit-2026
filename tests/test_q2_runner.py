@@ -116,6 +116,66 @@ def test_joint_loss_polarity_consistency_term_backpropagates_to_both_heads(monke
     assert torch.count_nonzero(output.score.grad) > 0
 
 
+def test_joint_loss_uses_conditional_bce_for_corn_and_ignores_class_weights() -> None:
+    ordinal_logits = torch.tensor([[0.2, -0.4], [0.7, 1.1], [-0.3, 0.9]])
+    output = Q2Output(
+        logits=torch.log_softmax(torch.tensor([[1.0, 0.0, -1.0]]).repeat(3, 1), dim=1),
+        score=torch.zeros(3),
+        gates=torch.empty(0),
+        temporal_attention=torch.empty(0),
+        ordinal_logits=ordinal_logits,
+    )
+    labels = torch.tensor([0, 1, 2])
+    scores = torch.zeros(3)
+    expected = torch.nn.functional.binary_cross_entropy_with_logits(ordinal_logits[:, 0], torch.tensor([0.0, 1.0, 1.0]))
+    expected += torch.nn.functional.binary_cross_entropy_with_logits(ordinal_logits[1:, 1], torch.tensor([0.0, 1.0]))
+    expected /= 2
+
+    actual = _joint_loss(
+        output,
+        labels,
+        scores,
+        torch.tensor([0.1, 7.0, 0.3]),
+        regression_loss_weight=0.0,
+        polarity_consistency_loss_weight=0.0,
+    )
+    alternate_weights = _joint_loss(
+        output,
+        labels,
+        scores,
+        torch.tensor([9.0, 0.2, 13.0]),
+        regression_loss_weight=0.0,
+        polarity_consistency_loss_weight=0.0,
+    )
+
+    assert torch.allclose(actual, expected)
+    assert torch.equal(alternate_weights, actual)
+
+
+def test_joint_loss_corn_all_negative_batch_uses_only_first_condition() -> None:
+    ordinal_logits = torch.tensor([[0.2, -0.4], [-0.7, 1.1]])
+    output = Q2Output(
+        logits=torch.log_softmax(torch.tensor([[1.0, 0.0, -1.0]]).repeat(2, 1), dim=1),
+        score=torch.zeros(2),
+        gates=torch.empty(0),
+        temporal_attention=torch.empty(0),
+        ordinal_logits=ordinal_logits,
+    )
+    expected = torch.nn.functional.binary_cross_entropy_with_logits(ordinal_logits[:, 0], torch.zeros(2))
+
+    actual = _joint_loss(
+        output,
+        torch.zeros(2, dtype=torch.int64),
+        torch.zeros(2),
+        torch.tensor([3.0, 2.0, 1.0]),
+        regression_loss_weight=0.0,
+        polarity_consistency_loss_weight=0.0,
+    )
+
+    assert torch.isfinite(actual)
+    assert torch.allclose(actual, expected)
+
+
 def test_metric_summary_reports_accuracy_macro_f1_mae_and_pearson() -> None:
     metrics = compute_metrics(
         true_classes=np.array([0, 1, 2]),
