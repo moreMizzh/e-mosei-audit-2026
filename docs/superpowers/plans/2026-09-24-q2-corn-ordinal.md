@@ -68,7 +68,7 @@ Run the focused suite above. Commit only the configuration, fixture and template
 
 Create `MaskAwareTemporalFusion(..., classification_variant="corn")` using the existing valid input fixture. Require finite `output.logits[B,3]`, finite `output.ordinal_logits[B,2]`, `torch.exp(output.logits).sum(dim=1)==1`, class indices in `[0,2]`, bounded scores, and invariant predictions after filling unavailable raw modality values with a large number.
 
-Add a loss test with `ordinal_logits=[[a0,a1],[b0,b1],[c0,c1]]`, labels `[0,1,2]`, and zero regression/consistency weights. Compute the expected loss as the average of BCE(`[:,0]`, `[0,1,1]`) and BCE(`[:,1][labels>0]`, `[0,1]`); assert `_joint_loss` equals it and ignores the supplied three-class weight vector. Add an all-negative batch case proving the first conditional BCE is finite when the second conditional task has no samples.
+Add a loss test with `ordinal_logits=[[a0,a1],[b0,b1],[c0,c1]]`, labels `[0,1,2]`, nonuniform three-class weights, and zero regression/consistency weights. Compute each conditional BCE with `reduction="none"`, multiply by `class_weights[labels]`, divide by that participating subset's weight sum, then average the two task losses; assert `_joint_loss` equals it. Add an all-negative batch case proving the weighted first conditional BCE is finite when the second conditional task has no samples.
 
 - [ ] **Step 2: Verify RED.**
 
@@ -117,15 +117,19 @@ In `runner.py`, add a private classification-loss helper called by `_joint_loss`
 if output.ordinal_logits is None:
     classification = nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
 else:
-    first = nn.functional.binary_cross_entropy_with_logits(
-        output.ordinal_logits[:, 0], (labels > 0).to(output.ordinal_logits.dtype)
+    sample_weights = class_weights[labels]
+    first_terms = nn.functional.binary_cross_entropy_with_logits(
+        output.ordinal_logits[:, 0], (labels > 0).to(output.ordinal_logits.dtype), reduction="none"
     )
+    first = (first_terms * sample_weights).sum() / sample_weights.sum()
     active = labels > 0
     terms = [first]
     if bool(active.any()):
-        terms.append(nn.functional.binary_cross_entropy_with_logits(
-            output.ordinal_logits[active, 1], (labels[active] > 1).to(output.ordinal_logits.dtype)
-        ))
+        second_weights = sample_weights[active]
+        second_terms = nn.functional.binary_cross_entropy_with_logits(
+            output.ordinal_logits[active, 1], (labels[active] > 1).to(output.ordinal_logits.dtype), reduction="none"
+        )
+        terms.append((second_terms * second_weights).sum() / second_weights.sum())
     classification = torch.stack(terms).mean()
 ```
 
@@ -166,14 +170,14 @@ Run `tests/test_q2_runner.py -q`, then the full suite. Commit runner persistence
 - Modify: `README.md`
 - Modify: `docs/superpowers/specs/2026-09-24-q2-exploration-portfolio.md`
 
-- [ ] **Step 1: Create the isolated config.**
+- [x] **Step 1: Create the isolated config.**
 
 Copy A's resolved fields exactly, set `output_dir = "/home/administrator/MyItem/E/artifacts/q2-valid-corn"` and `classification_variant = "corn"`; keep `learning_rate=0.001`, `synthetic_missingness_enabled=false`, `fusion_variant="gated"`, `text_adapter_variant="identity"`, all other fields and fixed seed unchanged.
 
-- [ ] **Step 2: Preflight and train exactly once.**
+- [x] **Step 2: Preflight and train exactly once.**
 
 Run `train-q2 --config q2-corn.toml --check`, requiring `3395/728/30` and no output directory. Then run the same command once without `--check`. Never access or report Attachment 2 test.
 
-- [ ] **Step 3: Audit and decide.**
+- [x] **Step 3: Audit and decide.**
 
 Require nonempty model/manifest, four clean metrics, 728 valid report support, 27 scenario rows and 30 attachment-3 rows. Normalize A's missing historical fields plus `classification_variant="flat"`; require every field and normalizer equality except `classification_variant: flat -> corn`. Write the comparison JSON and accept only macro-F1 `>=0.6212527658`. Add Val/Test ledger rows with Test unassessed, update the portfolio, run full pytest and `git diff --check`, then commit documentation.
