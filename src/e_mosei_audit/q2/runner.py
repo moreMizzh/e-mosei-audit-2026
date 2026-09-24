@@ -19,7 +19,12 @@ import torch
 from torch import nn
 
 from e_mosei_audit.archive import SevenZipArchive
-from e_mosei_audit.q2.config import Q2Config, validate_fusion_variant, validate_text_adapter_variant
+from e_mosei_audit.q2.config import (
+    Q2Config,
+    validate_classification_variant,
+    validate_fusion_variant,
+    validate_text_adapter_variant,
+)
 from e_mosei_audit.q2.data import AlignedSplit, Attachment3Sample, load_aligned_train_valid, load_attachment3_aligned
 from e_mosei_audit.q2.missingness import (
     DroppedMasks,
@@ -190,6 +195,7 @@ def run_q2(
         dropout=config.dropout,
         fusion_variant=config.fusion_variant,
         text_adapter_variant=config.text_adapter_variant,
+        classification_variant=config.classification_variant,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     weights = _class_weights(
@@ -319,6 +325,7 @@ def evaluate_saved_q2_valid(
         dropout=_manifest_dropout(training, "dropout"),
         fusion_variant=_manifest_fusion_variant(training),
         text_adapter_variant=_manifest_text_adapter_variant(training),
+        classification_variant=_manifest_classification_variant(training),
     ).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True), strict=True)
     valid_masks = observed_masks(dataset.valid.text_bert, dataset.valid.audio, dataset.valid.vision)
@@ -415,6 +422,14 @@ def _manifest_text_adapter_variant(training: Mapping[str, object]) -> str:
     if "text_adapter_variant" not in training:
         return "identity"
     return validate_text_adapter_variant(training["text_adapter_variant"])
+
+
+def _manifest_classification_variant(training: Mapping[str, object]) -> str:
+    """Treat historical saved runs as using the original flat classifier."""
+
+    if "classification_variant" not in training:
+        return "flat"
+    return validate_classification_variant(training["classification_variant"])
 
 
 def _manifest_normalizer_array(manifest: Mapping[str, object], field: str, width: int) -> np.ndarray:
@@ -519,18 +534,24 @@ def _classification_loss(output: Q2Output, labels: torch.Tensor, class_weights: 
     if output.ordinal_logits is None:
         return nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
     ordinal_logits = output.ordinal_logits
-    first = nn.functional.binary_cross_entropy_with_logits(
+    sample_weights = class_weights[labels]
+    first_terms = nn.functional.binary_cross_entropy_with_logits(
         ordinal_logits[:, 0],
         (labels > 0).to(ordinal_logits.dtype),
+        reduction="none",
     )
+    first = (first_terms * sample_weights).sum() / sample_weights.sum()
     active = labels > 0
     terms = [first]
     if bool(active.any()):
+        second_weights = sample_weights[active]
+        second_terms = nn.functional.binary_cross_entropy_with_logits(
+            ordinal_logits[active, 1],
+            (labels[active] > 1).to(ordinal_logits.dtype),
+            reduction="none",
+        )
         terms.append(
-            nn.functional.binary_cross_entropy_with_logits(
-                ordinal_logits[active, 1],
-                (labels[active] > 1).to(ordinal_logits.dtype),
-            )
+            (second_terms * second_weights).sum() / second_weights.sum()
         )
     return torch.stack(terms).mean()
 
@@ -740,6 +761,7 @@ def _write_run_outputs(
                     "class_weight_exponent": config.class_weight_exponent,
                     "fusion_variant": config.fusion_variant,
                     "text_adapter_variant": config.text_adapter_variant,
+                    "classification_variant": config.classification_variant,
                     "device": config.device,
                     "synthetic_missingness": {
                         "enabled": config.synthetic_missingness_enabled,

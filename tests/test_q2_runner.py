@@ -116,7 +116,7 @@ def test_joint_loss_polarity_consistency_term_backpropagates_to_both_heads(monke
     assert torch.count_nonzero(output.score.grad) > 0
 
 
-def test_joint_loss_uses_conditional_bce_for_corn_and_ignores_class_weights() -> None:
+def test_joint_loss_uses_weighted_conditional_bce_for_corn() -> None:
     ordinal_logits = torch.tensor([[0.2, -0.4], [0.7, 1.1], [-0.3, 0.9]])
     output = Q2Output(
         logits=torch.log_softmax(torch.tensor([[1.0, 0.0, -1.0]]).repeat(3, 1), dim=1),
@@ -127,29 +127,28 @@ def test_joint_loss_uses_conditional_bce_for_corn_and_ignores_class_weights() ->
     )
     labels = torch.tensor([0, 1, 2])
     scores = torch.zeros(3)
-    expected = torch.nn.functional.binary_cross_entropy_with_logits(ordinal_logits[:, 0], torch.tensor([0.0, 1.0, 1.0]))
-    expected += torch.nn.functional.binary_cross_entropy_with_logits(ordinal_logits[1:, 1], torch.tensor([0.0, 1.0]))
-    expected /= 2
+    class_weights = torch.tensor([0.1, 7.0, 0.3])
+    sample_weights = class_weights[labels]
+    first_terms = torch.nn.functional.binary_cross_entropy_with_logits(
+        ordinal_logits[:, 0], torch.tensor([0.0, 1.0, 1.0]), reduction="none"
+    )
+    first = (first_terms * sample_weights).sum() / sample_weights.sum()
+    active = labels > 0
+    second_terms = torch.nn.functional.binary_cross_entropy_with_logits(
+        ordinal_logits[active, 1], torch.tensor([0.0, 1.0]), reduction="none"
+    )
+    second = (second_terms * sample_weights[active]).sum() / sample_weights[active].sum()
+    expected = torch.stack((first, second)).mean()
 
     actual = _joint_loss(
         output,
         labels,
         scores,
-        torch.tensor([0.1, 7.0, 0.3]),
+        class_weights,
         regression_loss_weight=0.0,
         polarity_consistency_loss_weight=0.0,
     )
-    alternate_weights = _joint_loss(
-        output,
-        labels,
-        scores,
-        torch.tensor([9.0, 0.2, 13.0]),
-        regression_loss_weight=0.0,
-        polarity_consistency_loss_weight=0.0,
-    )
-
     assert torch.allclose(actual, expected)
-    assert torch.equal(alternate_weights, actual)
 
 
 def test_joint_loss_corn_all_negative_batch_uses_only_first_condition() -> None:
@@ -499,6 +498,40 @@ def test_run_q2_records_shared_late_expert_fusion_without_accessing_test(tmp_pat
     assert len(predictions) == 30
     assert manifest["training"]["fusion_variant"] == "late_expert_shared"
     assert manifest["training"]["text_adapter_variant"] == "identity"
+
+
+def test_run_q2_records_corn_variant_without_accessing_test(tmp_path: Path) -> None:
+    aligned_payload = TrainValidPayloadWithInaccessibleTest(
+        {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "an accessible Q2 runtime input"},
+        }
+    )
+    with pytest.raises(AssertionError, match="Attachment 2 test split must not be accessed"):
+        aligned_payload["test"]
+    with pytest.raises(AssertionError, match="Attachment 2 test split must not be accessed"):
+        aligned_payload.get("test")
+    members: dict[str, object] = {ALIGNED_50_MEMBER: aligned_payload}
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+    archive = RunnerArchive(members)
+    config = replace(
+        runner_config(tmp_path),
+        output_dir=tmp_path / "q2-corn-output",
+        classification_variant="corn",
+    )
+
+    summary = run_q2(config, archive=archive, token_encoder=TinyTokenEncoder())
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    with (config.output_dir / "attachment3_predictions.csv").open(encoding="utf-8", newline="") as stream:
+        predictions = list(csv.DictReader(stream))
+    assert summary["attachment3_count"] == 30
+    assert len(predictions) == 30
+    assert manifest["training"]["classification_variant"] == "corn"
+    assert archive.verify_count == 1
 
 
 def test_run_q2_forwards_configured_regression_loss_weight_to_training(monkeypatch, tmp_path: Path) -> None:
@@ -995,6 +1028,131 @@ def test_evaluate_saved_q2_valid_strictly_reconstructs_shared_late_expert_checkp
     assert sum(sum(row) for row in report["confusion_matrix"]["counts"]) == 3
     assert archive.verify_count == 1
     assert observed_strict == [True]
+
+
+def test_evaluate_saved_q2_valid_strictly_reconstructs_corn_checkpoint(monkeypatch, tmp_path: Path) -> None:
+    aligned_payload = TrainValidPayloadWithInaccessibleTest(
+        {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a valid evaluation input"},
+        }
+    )
+    with pytest.raises(AssertionError, match="Attachment 2 test split must not be accessed"):
+        aligned_payload["test"]
+    with pytest.raises(AssertionError, match="Attachment 2 test split must not be accessed"):
+        aligned_payload.get("test")
+    members: dict[str, object] = {ALIGNED_50_MEMBER: aligned_payload}
+    archive = RunnerArchive(members)
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-corn-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        classification_variant="corn",
+    )
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "fusion_variant": "gated",
+                    "text_adapter_variant": "identity",
+                    "classification_variant": "corn",
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed: list[tuple[int, bool]] = []
+    original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
+
+    def recording_load_state_dict(self, *args, **kwargs):
+        assert isinstance(self.classifier[-1], torch.nn.Linear)
+        observed.append((self.classifier[-1].out_features, kwargs["strict"]))
+        return original_load_state_dict(self, *args, **kwargs)
+
+    monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "corn-valid-report.json",
+        archive=archive,
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert report["sample_count"] == 3
+    assert archive.verify_count == 1
+    assert observed == [(2, True)]
+
+
+def test_evaluate_saved_q2_valid_rejects_unsupported_manifest_classification_variant(tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a valid evaluation input"},
+        }
+    }
+    archive = RunnerArchive(members)
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-invalid-classification-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "fusion_variant": "gated",
+                    "text_adapter_variant": "identity",
+                    "classification_variant": "unsupported",
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"\Aclassification_variant must be one of: flat, corn\Z"):
+        evaluate_saved_q2_valid(
+            run_dir,
+            tmp_path / "invalid-classification-report.json",
+            archive=archive,
+            token_encoder=TinyTokenEncoder(),
+        )
 
 
 def test_evaluate_saved_q2_valid_rejects_unsupported_manifest_fusion_variant(tmp_path: Path) -> None:
