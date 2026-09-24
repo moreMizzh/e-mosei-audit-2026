@@ -196,7 +196,9 @@ def validate_fusion_variant(value: object) -> str:
     """Require one of the persisted Q2 fusion architecture names."""
 
     if not isinstance(value, str) or value not in FUSION_VARIANTS:
-        raise ValueError("fusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared")
+        raise ValueError(
+            "fusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared, text_anchor_residual"
+        )
     return value
 
 

@@ -116,6 +116,28 @@ def test_mask_aware_fusion_returns_three_logits_and_bounded_score() -> None:
     assert torch.all(output.score >= -3)
 
 
+def test_text_anchor_residual_fusion_constructs_and_returns_valid_predictions() -> None:
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="text_anchor_residual",
+    )
+
+    output = model(
+        text=torch.randn(2, 50, 768),
+        audio=torch.randn(2, 50, 74),
+        vision=torch.randn(2, 50, 35),
+        masks=example_masks(),
+    )
+
+    assert output.logits.shape == (2, 3)
+    assert torch.isfinite(output.logits).all()
+    assert torch.isfinite(output.score).all()
+    assert torch.isin(output.logits.argmax(dim=1), torch.tensor([0, 1, 2])).all()
+
+
 @pytest.mark.parametrize("fusion_variant", ["gated", "mag_lite", "mult_lite"])
 def test_corn_classifier_returns_normalized_three_class_log_probabilities(fusion_variant: str) -> None:
     model = MaskAwareTemporalFusion(
@@ -717,7 +739,10 @@ def test_mult_lite_partial_masks_isolate_raw_values_and_preserve_attention_gradi
 def test_mask_aware_fusion_rejects_unsupported_fusion_variant() -> None:
     with pytest.raises(
         ValueError,
-        match=r"\Afusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared\Z",
+        match=(
+            r"\Afusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared, "
+            r"text_anchor_residual\Z"
+        ),
     ):
         MaskAwareTemporalFusion(fusion_variant="unsupported")
 

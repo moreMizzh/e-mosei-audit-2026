@@ -316,7 +316,10 @@ device = "cpu"
 
     with pytest.raises(
         ValueError,
-        match=r"\Afusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared\Z",
+        match=(
+            r"\Afusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared, "
+            r"text_anchor_residual\Z"
+        ),
     ):
         load_q2_config(config_path)
 
