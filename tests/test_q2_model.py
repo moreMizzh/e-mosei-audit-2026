@@ -1458,10 +1458,10 @@ def test_sinusoidal_positions_reach_only_observed_fused_temporal_slots() -> None
     gated_input = gated_recorder.inputs[0]
     sinusoidal_input = sinusoidal_recorder.inputs[0]
 
-    torch.testing.assert_close(
-        sinusoidal_input[0, temporal[0]] - gated_input[0, temporal[0]],
-        expected_positions[temporal[0]],
-    )
+    expected_input = (
+        gated_input + expected_positions.unsqueeze(0) * temporal.unsqueeze(-1).to(dtype=gated_input.dtype)
+    ).masked_fill(~temporal.unsqueeze(-1), 0.0)
+    assert torch.equal(sinusoidal_input, expected_input)
     assert torch.equal(gated_input[0, ~temporal[0]], torch.zeros_like(gated_input[0, ~temporal[0]]))
     assert torch.equal(
         sinusoidal_input[0, ~temporal[0]], torch.zeros_like(sinusoidal_input[0, ~temporal[0]])
@@ -1561,6 +1561,7 @@ def test_sinusoidal_gated_ignores_appended_fully_masked_padding() -> None:
     assert torch.equal(
         padded.temporal_attention[:, positions:], torch.zeros_like(padded.temporal_attention[:, positions:])
     )
+    # CPU projections can vary with sequence shape before position addition; helper prefix and padding remain exact.
     torch.testing.assert_close(padded_recorder.inputs[0][:, :positions], base_recorder.inputs[0])
     assert torch.equal(
         _sinusoidal_position_encoding(positions + padding, 16, device=text.device, dtype=text.dtype)[:positions],
