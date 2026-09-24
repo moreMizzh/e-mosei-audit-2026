@@ -85,6 +85,37 @@ def test_joint_loss_applies_configured_polarity_consistency_weight() -> None:
     assert torch.allclose(actual, expected)
 
 
+def test_joint_loss_polarity_consistency_term_backpropagates_to_both_heads(monkeypatch) -> None:
+    output = Q2Output(
+        logits=torch.tensor([[1.0, 0.0, -1.0], [-1.0, 0.0, 1.0]], requires_grad=True),
+        score=torch.tensor([0.0, 0.0], requires_grad=True),
+        gates=torch.empty(0),
+        temporal_attention=torch.empty(0),
+    )
+    monkeypatch.setattr(
+        q2_runner.nn.functional,
+        "cross_entropy",
+        lambda logits, labels, weight: logits.sum() * 0.0,
+    )
+
+    loss = q2_runner._joint_loss(
+        output,
+        torch.tensor([0, 1]),
+        torch.tensor([0.0, 0.0]),
+        torch.ones(3),
+        regression_loss_weight=0.0,
+        polarity_consistency_loss_weight=1.0,
+    )
+    loss.backward()
+
+    assert output.logits.grad is not None
+    assert torch.isfinite(output.logits.grad).all()
+    assert torch.count_nonzero(output.logits.grad) > 0
+    assert output.score.grad is not None
+    assert torch.isfinite(output.score.grad).all()
+    assert torch.count_nonzero(output.score.grad) > 0
+
+
 def test_metric_summary_reports_accuracy_macro_f1_mae_and_pearson() -> None:
     metrics = compute_metrics(
         true_classes=np.array([0, 1, 2]),
@@ -329,13 +360,13 @@ def test_run_q2_forwards_configured_polarity_consistency_loss_weight_to_training
         return original_joint_loss(*args, **kwargs)
 
     monkeypatch.setattr(q2_runner, "_joint_loss", recording_joint_loss)
-    config = replace(runner_config(tmp_path), polarity_consistency_loss_weight=0.10)
+    config = replace(runner_config(tmp_path), polarity_consistency_loss_weight=0.37)
 
     run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
 
-    assert observed_weights == [0.10]
+    assert observed_weights == [0.37]
     manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["training"]["polarity_consistency_loss_weight"] == 0.10
+    assert manifest["training"]["polarity_consistency_loss_weight"] == 0.37
 
 
 def test_run_q2_skips_training_synthetic_missingness_when_disabled(monkeypatch, tmp_path: Path) -> None:
