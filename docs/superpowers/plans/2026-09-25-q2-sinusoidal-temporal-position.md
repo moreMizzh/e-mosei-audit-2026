@@ -17,7 +17,7 @@
 - Modify: docs/q2-config.example.toml:8-24
 - Modify: tests/test_q2_config.py:10-114,288-333
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
 
 Add temporal_position_variant = "none" to every inline valid TOML fixture. Add a parameterized test requiring none and sinusoidal to load, and a test requiring unsupported to raise:
 
@@ -27,7 +27,7 @@ Add temporal_position_variant = "none" to every inline valid TOML fixture. Add a
     ):
         load_q2_config(config_path)
 
-- [ ] **Step 2: Run the new config tests to prove red**
+- [x] **Step 2: Run the new config tests to prove red**
 
 Run:
 
@@ -35,7 +35,7 @@ Run:
 
 Expected: failure identifies temporal_position_variant as absent from Q2Config, the exact TOML contract, or validation.
 
-- [ ] **Step 3: Implement the persisted field**
+- [x] **Step 3: Implement the persisted field**
 
 Add the field to _TRAINING_FIELDS and Q2Config; add TEMPORAL_POSITION_VARIANTS = ("none", "sinusoidal") and:
 
@@ -46,7 +46,7 @@ Add the field to _TRAINING_FIELDS and Q2Config; add TEMPORAL_POSITION_VARIANTS =
 
 Validate it from _validate_training, store it from load_q2_config, and document temporal_position_variant = "none" in the example TOML.
 
-- [ ] **Step 4: Verify config tests pass**
+- [x] **Step 4: Verify config tests pass**
 
 Run:
 
@@ -54,7 +54,7 @@ Run:
 
 Expected: all config tests pass.
 
-- [ ] **Step 5: Commit the config contract**
+- [x] **Step 5: Commit the config contract**
 
     git add src/e_mosei_audit/q2/config.py docs/q2-config.example.toml tests/test_q2_config.py
     git commit -m "feat: persist Q2 temporal position variant"
