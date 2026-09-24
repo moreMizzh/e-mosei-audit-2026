@@ -28,6 +28,7 @@
 - 候选 G 已淘汰：从 A 独立派生，仅将 `fusion_variant` 从 `gated` 改为无新增参数的 `late_expert_shared`。clean macro-F1 为 `0.6026841062`，较 A 下降 `0.0138836744`，远低于 `0.6212527658` 硬门槛；MAE 改善至 `0.6153963804`，Pearson 提升至 `0.6308207051`。27 个缺失场景 mean/worst macro-F1 为 `0.5944394626/0.5758645092`，较 A 为 `-0.0093560603/+0.0295208546`，仍通过 A-minus-`0.01` 护栏，但不能替代 clean F1。不得调整 shared expert 的编码、coverage、gate、head、初始化或 checkpoint。候选 E 的教师/学生或缺失课程条件也未触发，因为 clean 与场景均值没有呈现“clean 提升、鲁棒性下降”的明确冲突。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-late-expert-shared.json`。
 - 候选 H 已淘汰：从 A 独立派生，仅将 `learning_rate` 从 `0.001` 改为预注册的 `0.0003`，不加 scheduler 或其他学习率点。clean macro-F1 为 `0.5978645259`，较 A 下降 `0.0187032547`，且最佳 checkpoint 仍在 epoch 1；MAE 增至 `0.6247821450`。27 个缺失场景 mean/worst macro-F1 为 `0.5829816785/0.5297802215`，较 A 分别下降 `0.0208138444/0.0165634330`。这否定了该单点低学习率对 A 的解释；不得继续调学习率、添加 scheduler、warmup 或参数组。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-lr-0003.json`。
 - 候选 I 已淘汰：从 A 独立派生，仅将 `classification_variant` 从规范化历史值 `flat` 改为 `corn`，并保留原有类别权重的加权条件 BCE。clean macro-F1 为 `0.5793497742`，较 A 下降 `0.0372180064`，MAE 增至 `0.6405867934`。27 个缺失场景 mean/worst macro-F1 为 `0.5718741547/0.5162974858`，较 A 分别下降 `0.0319213682/0.0300461687`；Positive F1 从 `0.7065368567` 降至 `0.6167557932`。清单、归一化器和附件 3 数量一致，唯一规范化训练字段差异为 `classification_variant: flat -> corn`。该精确 CORN 头不满足硬门槛，不调条件损失、类别权重、阈值、回归权重或 checkpoint。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-corn.json`。
+- 候选 J 已淘汰：从 A 独立派生，仅将 `fusion_variant` 从 `gated` 改为无新增参数的 `text_anchor_residual`，以共享时序编码器将 text-only 表示作为 A 融合表示的零安全残差。clean macro-F1 为 `0.6128403025`，较 A 下降 `0.0037274780`，低于 `0.6212527658` 门槛；MAE 增至 `0.6371563673`。27 个缺失场景 mean/worst macro-F1 为 `0.6043105111/0.5651008622`，较 A 分别增加 `0.0005149882/0.0187572077`，但场景鲁棒性不能替代 clean 主指标。清单、归一化器和附件 3 数量一致，唯一规范化训练字段差异为 `fusion_variant: gated -> text_anchor_residual`。不得调锚点缩放、coverage、分支权重、文本编码层、损失、类别权重、checkpoint 或学习率。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-text-anchor-residual.json`。
 
 ## 候选组合
 
@@ -42,6 +43,7 @@
 | G（淘汰） | 时序 shared late-expert fusion | 各模态以共享时序编码得到独立 expert logits，再以 availability-masked reliability gate 融合。实测 clean macro-F1 `0.6026841062`，虽然 MAE 与最差缺失场景改善，但未达 hard gate。[[TFN]](https://aclanthology.org/D17-1115/) | 中 | 不调整编码、coverage、gate、head、初始化或 checkpoint。 |
 | H（淘汰） | A 的预注册低学习率 | 仅将 `learning_rate` 从 `0.001` 改为 `0.0003`，检验 A、B、D、F、G 都在 epoch 1 最优是否来自过快更新。实测 clean macro-F1 `0.5978645259`，且场景 mean/worst 同时回退。 | 小 | 不扫其他学习率，不加 scheduler、warmup 或参数组。 |
 | I（淘汰） | CORN 有序分类头 | 以两个条件概率显式表示 Negative < Neutral < Positive，同时保留 A 的类别权重。实测 clean macro-F1 `0.5793497742`，clean 与场景 F1 都明显回退。[[CORN]](https://arxiv.org/abs/2111.08851) | 中 | 不调条件损失、权重、阈值、回归或 checkpoint。 |
+| J（淘汰） | text-anchor residual | 保留 A 的门控融合，再以共享参数的 masked text-only temporal encoder/pooler 构成文本锚点；文本全不可用时严格为零。实测 clean macro-F1 `0.6128403025`，虽使 27 场景 mean/worst F1 微升至 `0.6043105111/0.5651008622`，仍不达 clean 硬门槛。[[Li and Chen]](https://aclanthology.org/2020.ccl-1.101/) | 小 | 不调锚点缩放、coverage、分支、编码器、损失或 checkpoint。 |
 
 ## 不作为首轮的路线
 
