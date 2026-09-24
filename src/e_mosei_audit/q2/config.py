@@ -22,6 +22,7 @@ FUSION_VARIANTS = (
 )
 TEXT_ADAPTER_VARIANTS = ("identity", "houlsby_output_b32")
 CLASSIFICATION_VARIANTS = ("flat", "corn")
+DROPOUT_CONSISTENCY_VARIANTS = ("none", "rdrop_alpha_1")
 TEMPORAL_POSITION_VARIANTS = ("none", "sinusoidal")
 TEMPORAL_POOLING_VARIANTS = ("attention", "attention_availability")
 TEXT_ENCODER_VARIANTS = ("last_hidden_state", "last4_scalar_mix")
@@ -37,6 +38,7 @@ _TRAINING_FIELDS = (
     "dropout",
     "regression_loss_weight",
     "polarity_consistency_loss_weight",
+    "dropout_consistency_variant",
     "class_weight_exponent",
     "synthetic_missingness_enabled",
     "fusion_variant",
@@ -66,6 +68,7 @@ class Q2Config:
     dropout: float
     regression_loss_weight: float
     polarity_consistency_loss_weight: float
+    dropout_consistency_variant: str
     class_weight_exponent: float
     synthetic_missingness_enabled: bool
     fusion_variant: str
@@ -113,6 +116,7 @@ def load_q2_config(path: Path) -> Q2Config:
         dropout=float(values["dropout"]),
         regression_loss_weight=float(values["regression_loss_weight"]),
         polarity_consistency_loss_weight=float(values["polarity_consistency_loss_weight"]),
+        dropout_consistency_variant=validate_dropout_consistency_variant(values["dropout_consistency_variant"]),
         class_weight_exponent=float(values["class_weight_exponent"]),
         synthetic_missingness_enabled=values["synthetic_missingness_enabled"],
         fusion_variant=validate_fusion_variant(values["fusion_variant"]),
@@ -205,7 +209,10 @@ def _validate_training(values: Mapping[str, object]) -> None:
         raise ValueError("synthetic_missingness_enabled must be boolean")
     validate_fusion_variant(values["fusion_variant"])
     validate_text_adapter_variant(values["text_adapter_variant"])
-    validate_classification_variant(values["classification_variant"])
+    classification_variant = validate_classification_variant(values["classification_variant"])
+    dropout_consistency_variant = validate_dropout_consistency_variant(values["dropout_consistency_variant"])
+    if dropout_consistency_variant == "rdrop_alpha_1" and classification_variant != "flat":
+        raise ValueError("rdrop_alpha_1 requires classification_variant=flat")
     validate_temporal_position_variant(values["temporal_position_variant"])
     validate_temporal_pooling_variant(values["temporal_pooling_variant"])
     validate_text_encoder_variant(values["text_encoder_variant"])
@@ -239,6 +246,14 @@ def validate_classification_variant(value: object) -> str:
 
     if not isinstance(value, str) or value not in CLASSIFICATION_VARIANTS:
         raise ValueError("classification_variant must be one of: flat, corn")
+    return value
+
+
+def validate_dropout_consistency_variant(value: object) -> str:
+    """Require one of the persisted Q2 dropout consistency objectives."""
+
+    if not isinstance(value, str) or value not in DROPOUT_CONSISTENCY_VARIANTS:
+        raise ValueError("dropout_consistency_variant must be one of: none, rdrop_alpha_1")
     return value
 
 
