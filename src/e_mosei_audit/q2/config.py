@@ -11,7 +11,7 @@ import tomllib
 
 
 _PATH_FIELDS = ("archive", "seven_zip", "bert_model", "output_dir")
-FUSION_VARIANTS = ("gated", "mag_lite", "mult_lite", "late_expert_shared")
+FUSION_VARIANTS = ("gated", "mag_lite", "mult_lite", "late_expert_shared", "text_anchor_residual")
 TEXT_ADAPTER_VARIANTS = ("identity", "houlsby_output_b32")
 CLASSIFICATION_VARIANTS = ("flat", "corn")
 _TRAINING_FIELDS = (

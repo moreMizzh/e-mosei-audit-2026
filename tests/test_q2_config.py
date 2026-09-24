@@ -61,7 +61,9 @@ device = "cpu"
     assert config.device == "cpu"
 
 
-@pytest.mark.parametrize("variant", ["gated", "mag_lite", "mult_lite", "late_expert_shared"])
+@pytest.mark.parametrize(
+    "variant", ["gated", "mag_lite", "mult_lite", "late_expert_shared", "text_anchor_residual"]
+)
 def test_load_q2_config_parses_supported_fusion_variant(tmp_path: Path, variant: str) -> None:
     archive = tmp_path / "data.zip"
     archive.write_bytes(b"zip")
