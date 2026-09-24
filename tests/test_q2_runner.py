@@ -532,7 +532,11 @@ class RunnerArchive:
 class ArchiveAccessSentinel:
     """Fail if runner-entry validation attempts to touch an archive."""
 
+    def __init__(self) -> None:
+        object.__setattr__(self, "accesses", [])
+
     def __getattribute__(self, name: str) -> object:
+        object.__getattribute__(self, "accesses").append(name)
         raise AssertionError(f"archive must not be accessed: {name}")
 
 
@@ -1458,6 +1462,39 @@ def test_check_q2_rejects_direct_invalid_dropout_semantic_before_output_or_archi
         check_q2(config, archive=archive, token_encoder=TinyTokenEncoder())
 
     assert archive.verify_count == 0
+    assert not config.output_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        (
+            {
+                "classification_loss_variant": "weighted_label_smoothing_005",
+                "classification_variant": "corn",
+            },
+            "weighted_label_smoothing_005 requires classification_variant=flat",
+        ),
+        (
+            {
+                "classification_loss_variant": "weighted_label_smoothing_005",
+                "dropout_consistency_variant": "rdrop_alpha_1",
+                "dropout": 0.1,
+            },
+            "weighted_label_smoothing_005 cannot be combined with rdrop_alpha_1",
+        ),
+    ],
+)
+def test_check_q2_rejects_direct_invalid_classification_loss_semantic_before_output_or_archive(
+    tmp_path: Path, updates: dict[str, object], message: str
+) -> None:
+    config = replace(runner_config(tmp_path), **updates)
+    archive = ArchiveAccessSentinel()
+
+    with pytest.raises(ValueError, match=rf"\A{message}\Z"):
+        check_q2(config, archive=archive, token_encoder=TinyTokenEncoder())
+
+    assert object.__getattribute__(archive, "accesses") == []
     assert not config.output_dir.exists()
 
 

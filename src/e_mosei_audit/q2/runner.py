@@ -306,6 +306,11 @@ def check_q2(
         classification_variant=config.classification_variant,
         dropout=config.dropout,
     )
+    validate_classification_loss_training(
+        config.classification_loss_variant,
+        classification_variant=config.classification_variant,
+        dropout_consistency_variant=config.dropout_consistency_variant,
+    )
     _validate_output_target(config.output_dir)
     active_archive = archive or SevenZipArchive(config.archive, config.seven_zip)
     active_archive.verify()
