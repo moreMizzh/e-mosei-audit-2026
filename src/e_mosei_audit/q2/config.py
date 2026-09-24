@@ -23,6 +23,7 @@ _TRAINING_FIELDS = (
     "dropout",
     "regression_loss_weight",
     "class_weight_exponent",
+    "synthetic_missingness_enabled",
     "device",
 )
 
@@ -44,6 +45,7 @@ class Q2Config:
     dropout: float
     regression_loss_weight: float
     class_weight_exponent: float
+    synthetic_missingness_enabled: bool
     device: str
 
 
@@ -83,6 +85,7 @@ def load_q2_config(path: Path) -> Q2Config:
         dropout=float(values["dropout"]),
         regression_loss_weight=float(values["regression_loss_weight"]),
         class_weight_exponent=float(values["class_weight_exponent"]),
+        synthetic_missingness_enabled=values["synthetic_missingness_enabled"],
         device=values["device"],
     )
 
@@ -155,6 +158,8 @@ def _validate_training(values: Mapping[str, object]) -> None:
         or class_weight_exponent <= 0
     ):
         raise ValueError("class_weight_exponent is outside its valid range")
+    if not isinstance(values["synthetic_missingness_enabled"], bool):
+        raise ValueError("synthetic_missingness_enabled must be boolean")
     if values["hidden_size"] % values["heads"]:
         raise ValueError("hidden_size must be divisible by heads")
     if not isinstance(values["device"], str) or not values["device"]:

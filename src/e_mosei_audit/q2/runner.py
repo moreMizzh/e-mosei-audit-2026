@@ -210,6 +210,7 @@ def run_q2(
             batch_size=config.batch_size,
             class_weights=weights,
             regression_loss_weight=config.regression_loss_weight,
+            synthetic_missingness_enabled=config.synthetic_missingness_enabled,
             rng=generator,
             device=device,
         )
@@ -446,15 +447,19 @@ def _train_epoch(
     batch_size: int,
     class_weights: torch.Tensor,
     regression_loss_weight: float,
+    synthetic_missingness_enabled: bool,
     rng: np.random.Generator,
     device: torch.device,
 ) -> None:
     model.train()
     for indexes in _batch_indexes(split.sample_count, batch_size, rng):
         batch_masks = _slice_masks(masks, indexes)
-        count = int(rng.integers(1, 3))
-        chosen = tuple(rng.choice(np.asarray(("text", "audio", "vision")), size=count, replace=False).tolist())
-        dropped = apply_contiguous_drop(batch_masks, rng=rng, modalities=chosen)
+        if synthetic_missingness_enabled:
+            count = int(rng.integers(1, 3))
+            chosen = tuple(rng.choice(np.asarray(("text", "audio", "vision")), size=count, replace=False).tolist())
+            dropped = apply_contiguous_drop(batch_masks, rng=rng, modalities=chosen)
+        else:
+            dropped = DroppedMasks(masks=batch_masks, drops=())
         output, labels, scores = _forward_split(model, encoder, split, indexes, dropped, normalizer, device)
         loss = _joint_loss(
             output,
@@ -684,7 +689,11 @@ def _write_run_outputs(
                     "regression_loss_weight": config.regression_loss_weight,
                     "class_weight_exponent": config.class_weight_exponent,
                     "device": config.device,
-                    "synthetic_missingness": {"modalities_per_sample": "1 or 2", "fraction_range": [0.1, 0.5]},
+                    "synthetic_missingness": {
+                        "enabled": config.synthetic_missingness_enabled,
+                        "modalities_per_sample": "1 or 2",
+                        "fraction_range": [0.1, 0.5],
+                    },
                 },
                 "normalizer": normalizer.as_dict(),
                 "attachment3_count": len(predictions),

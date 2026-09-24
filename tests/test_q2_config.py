@@ -35,6 +35,7 @@ layers = 1
 dropout = 0.0
 regression_loss_weight = 0.5
 class_weight_exponent = 1.0
+synthetic_missingness_enabled = true
 device = "cpu"
 """,
         encoding="utf-8",
@@ -48,7 +49,55 @@ device = "cpu"
     assert config.epochs == 3
     assert config.regression_loss_weight == 0.5
     assert config.class_weight_exponent == 1.0
+    assert config.synthetic_missingness_enabled is True
     assert config.device == "cpu"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("true", True), ("false", False), ("1", None), ('"false"', None)],
+)
+def test_load_q2_config_parses_synthetic_missingness_enabled(
+    tmp_path: Path, value: str, expected: bool | None
+) -> None:
+    archive = tmp_path / "data.zip"
+    archive.write_bytes(b"zip")
+    seven_zip = tmp_path / "7za"
+    seven_zip.write_bytes(b"tool")
+    seven_zip.chmod(0o755)
+    bert_model = tmp_path / "bert-base-uncased"
+    bert_model.mkdir()
+    config_path = tmp_path / "q2.toml"
+    config_path.write_text(
+        f'''[paths]
+archive = "data.zip"
+seven_zip = "7za"
+bert_model = "bert-base-uncased"
+output_dir = "artifacts/q2"
+
+[training]
+seed = 7
+epochs = 3
+batch_size = 2
+learning_rate = 0.001
+weight_decay = 0.01
+hidden_size = 16
+heads = 4
+layers = 1
+dropout = 0.0
+regression_loss_weight = 0.5
+class_weight_exponent = 1.0
+synthetic_missingness_enabled = {value}
+device = "cpu"
+''',
+        encoding="utf-8",
+    )
+
+    if expected is None:
+        with pytest.raises(ValueError, match="synthetic_missingness_enabled must be boolean"):
+            load_q2_config(config_path)
+    else:
+        assert load_q2_config(config_path).synthetic_missingness_enabled is expected
 
 
 @pytest.mark.parametrize(
@@ -93,6 +142,7 @@ layers = 1
 dropout = 0.0
 regression_loss_weight = {value if field == "regression_loss_weight" else "0.5"}
 class_weight_exponent = {value if field == "class_weight_exponent" else "1.0"}
+synthetic_missingness_enabled = true
 device = "cpu"
 ''',
         encoding="utf-8",
@@ -131,6 +181,7 @@ layers = 1
 dropout = 0.0
 regression_loss_weight = 0.5
 class_weight_exponent = 1.0
+synthetic_missingness_enabled = true
 device = "cpu"
 ''',
         encoding="utf-8",

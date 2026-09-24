@@ -197,6 +197,7 @@ def runner_config(tmp_path: Path) -> Q2Config:
         dropout=0.0,
         regression_loss_weight=0.5,
         class_weight_exponent=1.0,
+        synthetic_missingness_enabled=True,
         device="cpu",
     )
 
@@ -231,6 +232,7 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     assert set(metrics["clean"]) == {"accuracy", "macro_f1", "mae", "pearson"}
     assert manifest["training"]["regression_loss_weight"] == 0.5
     assert manifest["training"]["class_weight_exponent"] == 1.0
+    assert manifest["training"]["synthetic_missingness"]["enabled"] is True
     assert classification["confusion_matrix"]["labels"] == ["Negative", "Neutral", "Positive"]
     assert sum(sum(row) for row in classification["confusion_matrix"]["counts"]) == 3
     assert {
@@ -269,6 +271,30 @@ def test_run_q2_forwards_configured_regression_loss_weight_to_training(monkeypat
     run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
 
     assert observed_weights == [0.25]
+
+
+def test_run_q2_skips_training_synthetic_missingness_when_disabled(monkeypatch, tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a training or validation input"},
+        }
+    }
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("training synthetic missingness must be disabled")
+
+    monkeypatch.setattr(q2_runner, "apply_contiguous_drop", fail_if_called)
+    config = replace(runner_config(tmp_path), synthetic_missingness_enabled=False)
+
+    run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["training"]["synthetic_missingness"]["enabled"] is False
 
 
 def test_class_weights_use_normalized_inverse_frequency_exponent() -> None:
