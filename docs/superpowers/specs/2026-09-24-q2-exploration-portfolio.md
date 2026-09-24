@@ -26,6 +26,7 @@
 - 候选 D 已淘汰：在 A 上仅将 `fusion_variant` 改为 `mult_lite`，clean macro-F1 为 `0.5884832446`，较 A 下降 `0.0280845359`，MAE 增至 `0.6525162458`。27 个缺失场景的 mean/worst macro-F1 从 `0.6037955229/0.5463436545` 降至 `0.5779645629/0.5249651686`，均越过 A-minus-`0.01` 护栏。不改 MulT-lite 的 head、深度、dropout 或残差缩放；进入独立的冻结文本输出 adapter。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-mult-lite.json`。
 - 候选 F 已淘汰：从 A 独立派生，仅将 `text_adapter_variant` 从 `identity` 改为冻结 BERT 后的 `houlsby_output_b32`。clean macro-F1 为 `0.6180331930`，较 A 提升 `0.0014654124`，但仍低于 `0.6212527658` 硬门槛；MAE 为 `0.6366817355`，仍低于 v4 MAE + `0.02` 护栏。27 个缺失场景的 mean/worst macro-F1 为 `0.6041805575/0.5517189624`，较 A 分别提升 `0.0003850346/0.0053753079`。这只是正向信号，不是可接受结果；不得调 adapter 的瓶颈、激活、初始化或其他超参数，下一项进入 late-expert fusion。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-text-adapter-b32.json`。
 - 候选 G 已淘汰：从 A 独立派生，仅将 `fusion_variant` 从 `gated` 改为无新增参数的 `late_expert_shared`。clean macro-F1 为 `0.6026841062`，较 A 下降 `0.0138836744`，远低于 `0.6212527658` 硬门槛；MAE 改善至 `0.6153963804`，Pearson 提升至 `0.6308207051`。27 个缺失场景 mean/worst macro-F1 为 `0.5944394626/0.5758645092`，较 A 为 `-0.0093560603/+0.0295208546`，仍通过 A-minus-`0.01` 护栏，但不能替代 clean F1。不得调整 shared expert 的编码、coverage、gate、head、初始化或 checkpoint。候选 E 的教师/学生或缺失课程条件也未触发，因为 clean 与场景均值没有呈现“clean 提升、鲁棒性下降”的明确冲突。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-late-expert-shared.json`。
+- 候选 H 已淘汰：从 A 独立派生，仅将 `learning_rate` 从 `0.001` 改为预注册的 `0.0003`，不加 scheduler 或其他学习率点。clean macro-F1 为 `0.5978645259`，较 A 下降 `0.0187032547`，且最佳 checkpoint 仍在 epoch 1；MAE 增至 `0.6247821450`。27 个缺失场景 mean/worst macro-F1 为 `0.5829816785/0.5297802215`，较 A 分别下降 `0.0208138444/0.0165634330`。这否定了该单点低学习率对 A 的解释；不得继续调学习率、添加 scheduler、warmup 或参数组。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-lr-0003.json`。
 
 ## 候选组合
 
@@ -38,6 +39,7 @@
 | E（未触发） | 受控缺失课程或完整教师-遮蔽学生蒸馏 | 仅在 G 后显示 clean/鲁棒明确冲突时使用。G 的 clean 与场景均值均下降，故本候选不作为对 G 的调参替代。[[UMDF]](https://ojs.aaai.org/index.php/AAAI/article/view/28871/) [[TFR-Net]](https://doi.org/10.1145/3474085.3475585) | 中 | 保持不执行；不能用作回调 G 的方式。 |
 | F（淘汰） | 冻结 BERT 的输出残差 adapter | 在 BERT 输出、文本投影之前加入固定瓶颈 32 的残差 adapter；BERT 保持 `no_grad`。实测 clean macro-F1 `0.6180331930`，较 A 仅提高 `0.0014654124`，未达硬门槛；缺失场景 mean/worst 有小幅提升。[[Adapters]](https://proceedings.mlr.press/v97/houlsby19a.html) | 中 | 不调瓶颈、激活、初始化或其他 adapter 超参数。 |
 | G（淘汰） | 时序 shared late-expert fusion | 各模态以共享时序编码得到独立 expert logits，再以 availability-masked reliability gate 融合。实测 clean macro-F1 `0.6026841062`，虽然 MAE 与最差缺失场景改善，但未达 hard gate。[[TFN]](https://aclanthology.org/D17-1115/) | 中 | 不调整编码、coverage、gate、head、初始化或 checkpoint。 |
+| H（淘汰） | A 的预注册低学习率 | 仅将 `learning_rate` 从 `0.001` 改为 `0.0003`，检验 A、B、D、F、G 都在 epoch 1 最优是否来自过快更新。实测 clean macro-F1 `0.5978645259`，且场景 mean/worst 同时回退。 | 小 | 不扫其他学习率，不加 scheduler、warmup 或参数组。 |
 
 ## 不作为首轮的路线
 
