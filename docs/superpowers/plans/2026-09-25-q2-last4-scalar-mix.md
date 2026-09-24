@@ -69,7 +69,7 @@ Run the Step 2 command. Expected: all focused configuration, CLI, and runner fix
 - Modify: `src/e_mosei_audit/q2/model.py`
 - Modify: `tests/test_q2_model.py`
 
-- [ ] **Step 1: Write failing frozen-encoder tests**
+- [x] **Step 1: Write failing frozen-encoder tests**
 
 Extend `FakeBert` so it records `output_hidden_states` and can return a deterministic `hidden_states` tuple whose final four `[B, 50, 768]` tensors differ. Add tests requiring:
 
@@ -79,7 +79,7 @@ Extend `FakeBert` so it records `output_hidden_states` and can return a determin
 - a scalar loss on its output produces finite nonzero gradients for both `layer_logits` and `scale`, while every BERT parameter remains `requires_grad=False` and gradient-free;
 - encoder trainable state contains exactly `layer_logits` and `scale`, accepts a matching detached state, and rejects missing, extra, non-tensor, non-finite, or wrong-shaped state without serializing BERT weights.
 
-- [ ] **Step 2: Run model tests to prove red**
+- [x] **Step 2: Run model tests to prove red**
 
 Run:
 
@@ -87,7 +87,7 @@ Run:
 
 Expected: construction rejects `text_encoder_variant`, and scalar-mix state/hidden-layer assertions fail because the interface does not exist.
 
-- [ ] **Step 3: Implement the minimal frozen encoder interface**
+- [x] **Step 3: Implement the minimal frozen encoder interface**
 
 Import `validate_text_encoder_variant`. Extend `FrozenBertEncoder.__init__` and `from_local` with `text_encoder_variant: str = "last_hidden_state"`; validate and store it. Keep `self.model.eval()` and `self.model.requires_grad_(False)` unchanged.
 
@@ -109,11 +109,11 @@ embeddings = self.scale * (weights * layers).sum(dim=0)
 
 Validate final shape/finite tensor as the existing encoder does. Do not register BERT in the fusion model, unfreeze it, add a b32 adapter, or change `MaskAwareTemporalFusion`.
 
-- [ ] **Step 4: Verify model tests are green**
+- [x] **Step 4: Verify model tests are green**
 
 Run the Step 2 command. Expected: all encoder and mask/fusion regression tests pass.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
     git add src/e_mosei_audit/q2/model.py tests/test_q2_model.py
     git commit -m "feat: add Q2 frozen last-four scalar mix"
