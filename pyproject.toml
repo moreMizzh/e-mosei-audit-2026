@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 q1 = ["mediapipe>=0.10.14", "nltk>=3.9", "opensmile>=2.5.1", "Pillow>=10.4", "torch>=2.4", "transformers>=4.45", "whisperx>=3.3"]
+q2 = ["torch>=2.4", "transformers>=4.45"]
 
 [project.scripts]
 e-mosei-audit = "e_mosei_audit.cli:main"
