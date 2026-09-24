@@ -2,7 +2,7 @@
 
 ## Decision
 
-Candidate Q is an A-derived, valid-only trial of fixed weighted label smoothing.
+Candidate R is an A-derived, valid-only trial of fixed weighted label smoothing.
 It changes exactly one persisted training semantic:
 
 ```text
@@ -18,7 +18,7 @@ predicted, or used in any decision.
 
 The target is clean valid macro-F1 at least `0.6212527658`. A's clean valid
 macro-F1 is `0.6165677806`; the closest retired candidate, frozen output adapter
-`b32`, reached `0.6180331930` but cannot be retuned. Candidate Q is independent
+`b32`, reached `0.6180331930` but cannot be retuned. Candidate R is independent
 of every retired model, fusion, encoder, pooling, and R-Drop variant.
 
 ## Alternatives Considered
@@ -41,7 +41,7 @@ of every retired model, fusion, encoder, pooling, and R-Drop variant.
 ## Exact Loss Semantics
 
 For a flat output `z`, target `y`, existing per-class weights `w`, and fixed
-`epsilon = 0.05`, Candidate Q uses the exact PyTorch semantic:
+`epsilon = 0.05`, Candidate R uses the exact PyTorch semantic:
 
 ```python
 torch.nn.functional.cross_entropy(
@@ -57,7 +57,7 @@ The existing hard-CE route stays bit-for-bit equivalent to
 inverse-frequency weighting instead of silently replacing or stacking a second
 class-balancing method. The new variant is valid only with the flat classifier;
 CORN's conditional BCE and `neutral_gate_polarity`'s normalized log-probability
-head are not candidates. R-Drop remains hard-CE-only, so Candidate Q cannot be
+head are not candidates. R-Drop remains hard-CE-only, so Candidate R cannot be
 combined with R-Drop.
 
 No probability thresholds, calibration, label changes, model parameters,
@@ -84,18 +84,18 @@ Before any real run, tests must prove:
 - both persisted values parse and unsupported values fail exactly;
 - label smoothing is accepted only with `classification_variant="flat"` and
   `dropout_consistency_variant="none"`;
-- `hard_ce` remains the current weighted CE, while Candidate Q equals the exact
+- `hard_ce` remains the current weighted CE, while Candidate R equals the exact
   weighted PyTorch label-smoothing loss and back-propagates finite gradients;
 - fake-archive training records the variant without accessing an inaccessible
   Attachment 2 test sentinel; and
-- strict saved-valid reconstruction accepts the persisted Q manifest and rejects
+- strict saved-valid reconstruction accepts the persisted R manifest and rejects
   an unsupported loss value without weakening state-dict loading.
 
 After focused and full unit tests pass, one ignored configuration must preflight to
 `train=3395`, `valid=728`, and `attachment3=30` without making an output. It then
 trains exactly once into `artifacts/q2-valid-label-smoothing-005/`; a distinct
 strict saved-valid report is generated exactly once. The comparison record must
-prove that normalized A/Q manifests differ only in
+prove that normalized A/R manifests differ only in
 `classification_loss_variant`, and must record clean metrics, per-class F1,
 27-scenario mean/worst, 30 attachment-3 predictions, and the explicit
 train/valid-only scope.

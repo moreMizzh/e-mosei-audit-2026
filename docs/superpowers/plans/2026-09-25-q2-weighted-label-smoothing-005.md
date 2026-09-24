@@ -1,6 +1,6 @@
 # Q2 Weighted Label-Smoothing Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use Markdown checkboxes for tracking.
 
 **Goal:** Add one persisted fixed weighted-label-smoothing loss and valid-only evaluate it exactly once as an A-derived Q2 candidate.
 
@@ -18,13 +18,17 @@
 - `tests/test_q2_runner.py`: loss equation, runner test-isolation, persistence and strict replay.
 - `README.md` and `docs/superpowers/specs/2026-09-24-q2-exploration-portfolio.md`: real result only after the one run.
 
+**Completion evidence:** Tasks 1-3 landed in commits `1764606`, `1da1557`, and
+`d663ce0`; the saved Candidate R artifact records the persisted loss semantic and
+strict valid reconstruction.
+
 ### Task 1: Persist And Validate The Loss Semantic
 
 **Files:**
 - Modify: `src/e_mosei_audit/q2/config.py:18-80,100-128,196-220,246-280`
 - Modify: `tests/test_q2_config.py:20-70,360-530,860-950`
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
 
 Add `classification_loss_variant = "hard_ce"` to every complete TOML fixture; exact-field validation must remain strict. Add this parameterization:
 
@@ -44,7 +48,7 @@ Add an unsupported-value test requiring `classification_loss_variant must be one
 "weighted_label_smoothing_005 cannot be combined with rdrop_alpha_1"
 ```
 
-- [ ] **Step 2: Prove the new tests are red**
+- [x] **Step 2: Prove the new tests are red**
 
 Run:
 
@@ -54,7 +58,7 @@ PYTHONPATH="$PWD/src" /home/administrator/MyItem/E/.tools/q1-kaggle/bin/python -
 
 Expected: new accepted-field tests fail because `classification_loss_variant` is not recognized; failures must not be TOML syntax errors.
 
-- [ ] **Step 3: Implement the smallest config contract**
+- [x] **Step 3: Implement the smallest config contract**
 
 Add this enum, required field, load result, and validator:
 
@@ -87,7 +91,7 @@ def validate_classification_loss_training(
 
 In `_validate_training`, reuse the validated classification and dropout-consistency values, retain the R-Drop/dropout checks, then call `validate_classification_loss_training`. Do not alter class weights, model fields, data, or defaults.
 
-- [ ] **Step 4: Prove config GREEN and commit**
+- [x] **Step 4: Prove config GREEN and commit**
 
 Run the Step 2 command; it must pass. Then:
 
@@ -102,7 +106,7 @@ git commit -m "feat: configure Q2 weighted label smoothing"
 - Modify: `src/e_mosei_audit/q2/runner.py:620-755,840-975`
 - Modify: `tests/test_q2_runner.py:45-200,560-680,900-940`
 
-- [ ] **Step 1: Write failing loss and fake-run tests**
+- [x] **Step 1: Write failing loss and fake-run tests**
 
 Add a direct loss test using nonuniform weights and flat logits:
 
@@ -136,7 +140,7 @@ config = replace(
 
 Its Attachment 2 test accessor remains inaccessible; require 30 Attachment 3 predictions and persisted `training["classification_loss_variant"]`.
 
-- [ ] **Step 2: Prove runner RED**
+- [x] **Step 2: Prove runner RED**
 
 Run:
 
@@ -146,7 +150,7 @@ PYTHONPATH="$PWD/src" /home/administrator/MyItem/E/.tools/q1-kaggle/bin/python -
 
 Expected: `_classification_loss` rejects the new keyword before implementation and the new config field is unavailable until Task 1 lands.
 
-- [ ] **Step 3: Implement only the loss call chain**
+- [x] **Step 3: Implement only the loss call chain**
 
 Add `classification_loss_variant` to `_train_epoch`, `_joint_loss`, `_rdrop_joint_loss`, and `_classification_loss`; pass `config.classification_loss_variant` from `run_q2` to every train epoch. Implement the flat branch exactly:
 
@@ -166,7 +170,7 @@ if variant != "hard_ce":
 
 Preserve the existing CORN conditional-BCE branch verbatim. Persist `classification_loss_variant` next to `classification_variant` in the run manifest. Update factories and direct test calls with `hard_ce`. Do not change `_evaluate`, prediction argmax, model, masks, optimizer, or checkpoint selection.
 
-- [ ] **Step 4: Prove runner GREEN and commit**
+- [x] **Step 4: Prove runner GREEN and commit**
 
 Run the Step 2 command; it must pass. Then:
 
@@ -181,7 +185,7 @@ git commit -m "feat: add Q2 weighted label smoothing loss"
 - Modify: `src/e_mosei_audit/q2/runner.py:350-525`
 - Modify: `tests/test_q2_runner.py:1450-2460`
 
-- [ ] **Step 1: Write failing replay tests**
+- [x] **Step 1: Write failing replay tests**
 
 Construct a strict saved-valid fake run with flat state dict and these manifest values:
 
@@ -193,11 +197,11 @@ Construct a strict saved-valid fake run with flat state dict and these manifest 
 
 Its fake Attachment 2 test accessor raises; require `evaluate_saved_q2_valid` to use only valid. Duplicate with `classification_loss_variant="unsupported"` and require the exact enum `ValueError`. Preserve a field-absent historical manifest test and require its hard-CE fallback.
 
-- [ ] **Step 2: Prove strict replay RED**
+- [x] **Step 2: Prove strict replay RED**
 
 Run only the new test node IDs. Expected: the unsupported manifest is accepted before saved-manifest validation exists, proving the test reaches the intended boundary.
 
-- [ ] **Step 3: Implement fallback and early validation**
+- [x] **Step 3: Implement fallback and early validation**
 
 Add:
 
@@ -210,7 +214,7 @@ def _manifest_classification_loss_variant(training: Mapping[str, object]) -> str
 
 Before archive access in `evaluate_saved_q2_valid`, obtain the classification, dropout-consistency, and loss semantics; call `validate_classification_loss_training` with them. Keep this value out of inference math. Pass the already-validated classification variant into model construction.
 
-- [ ] **Step 4: Prove full GREEN and commit**
+- [x] **Step 4: Prove full GREEN and commit**
 
 Run:
 
@@ -237,7 +241,7 @@ git commit -m "test: validate Q2 label smoothing saved runs"
 - Modify: `docs/superpowers/specs/2026-09-24-q2-exploration-portfolio.md`
 - Modify: this plan
 
-- [ ] **Step 1: Preflight an A-normalized ignored TOML**
+- [x] **Step 1: Preflight an A-normalized ignored TOML**
 
 Copy every A path/training value exactly, except use:
 
@@ -254,11 +258,11 @@ PYTHONPATH="$PWD/src" /home/administrator/MyItem/E/.tools/q1-kaggle/bin/python -
 
 Require `train=3395`, `valid=728`, `attachment3=30`, and no created output. Do not invoke any Test command.
 
-- [ ] **Step 2: Run training exactly once**
+- [x] **Step 2: Run training exactly once**
 
 After all Task 3 gates pass, run once with the same command without `--check`. Do not edit/rerun config or invoke Attachment 2 Test.
 
-- [ ] **Step 3: Rebuild valid exactly once and compare**
+- [x] **Step 3: Rebuild valid exactly once and compare**
 
 Run once with a fresh report path:
 
@@ -266,8 +270,8 @@ Run once with a fresh report path:
 PYTHONPATH="$PWD/src" /home/administrator/MyItem/E/.tools/q1-kaggle/bin/python -m e_mosei_audit.cli evaluate-q2-valid --run-dir artifacts/q2-valid-label-smoothing-005 --output artifacts/q2-valid-label-smoothing-005/strict-valid-report.json
 ```
 
-Require saved/rebuilt clean Accuracy, macro-F1, MAE, and Pearson to match; valid support 728; 27 scenario rows; 30 Attachment 3 predictions; nonempty model; and a normalized A/Q manifest difference containing only `classification_loss_variant`. Write the ignored comparison JSON with this evidence and an explicit train/valid-only scope.
+Require saved/rebuilt clean Accuracy, macro-F1, MAE, and Pearson to match; valid support 728; 27 scenario rows; 30 Attachment 3 predictions; nonempty model; and a normalized A/R manifest difference containing only `classification_loss_variant`. Write the ignored comparison JSON with this evidence and an explicit train/valid-only scope.
 
-- [ ] **Step 4: Record and freeze**
+- [x] **Step 4: Record and freeze**
 
-Add exactly one paired README Val/Test row: Val uses real metrics; Test is all `-` and `未评估`. Record metrics, class F1, scenario mean/worst, strict replay, and the sole manifest difference in the exploration portfolio. Accept only macro-F1 `>= 0.6212527658`; otherwise retire exactly epsilon `0.05`, with no epsilon/class-weight/loss-weight/checkpoint/seed/test/combination tuning. Run full tests and `git diff --check`, then commit the three documentation files with `docs: record Q2 label smoothing result`.
+Add exactly one paired README Val/Test row: Val uses real metrics; Test is all `-` and `未评估`. Record metrics, class F1, scenario mean/worst, strict replay, and the sole manifest difference in the exploration portfolio. Candidate R scored `0.6089202757`, below `0.6212527658`, so its exact epsilon `0.05` treatment is retired; do not tune epsilon, class weights, loss weights, checkpoint, seed, test, or combinations. The artifacts show one training run and one strict valid reconstruction only.

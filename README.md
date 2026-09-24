@@ -32,6 +32,7 @@
 | Gated A + 冻结 BERT 最后四层标量混合 | `q2-valid-last4-scalar-mix` | 0.625000 | 0.613449 | 0.679322 | 0.582464 | 1 | 淘汰：clean F1 低于硬门槛 |
 | Gated A + 固定 R-Drop `alpha=1` | `q2-valid-rdrop-alpha-1` | 0.642857 | 0.613798 | 0.687182 | 0.594956 | 1 | 淘汰：clean F1 低于硬门槛 |
 | Gated A + Neutral gate 极性分解 | `q2-valid-neutral-gate-polarity` | 0.605769 | 0.596724 | 0.654760 | 0.564933 | 1 | 淘汰：clean F1、三类 F1、MAE 与场景均值回退 |
+| Gated A + 固定加权标签平滑 `epsilon=0.05` | `q2-valid-label-smoothing-005` | 0.633242 | 0.608920 | 0.696294 | 0.606287 | 1 | 淘汰：clean F1、Negative F1、MAE 与场景均值回退 |
 
 ### Test
 
@@ -61,6 +62,7 @@
 | Gated A + 冻结 BERT 最后四层标量混合 | `q2-valid-last4-scalar-mix` | - | - | - | - | 未评估 |
 | Gated A + 固定 R-Drop `alpha=1` | `q2-valid-rdrop-alpha-1` | - | - | - | - | 未评估 |
 | Gated A + Neutral gate 极性分解 | `q2-valid-neutral-gate-polarity` | - | - | - | - | 未评估 |
+| Gated A + 固定加权标签平滑 `epsilon=0.05` | `q2-valid-label-smoothing-005` | - | - | - | - | 未评估 |
 
 `Gated v4` 的 test 行来自模型冻结后的单次后验评估：checkpoint 先按附件 2 `valid` 的 macro-F1、再按 MAE 选定，之后仅对 727 条 `test` 样本推理，没有重训、调参或再次选模。其余候选均未评估；在当前探索期不得为了补全此表而运行 test，更不能将 valid 数值复制为 test 数值。
 
