@@ -204,6 +204,16 @@ class RunnerArchive:
         yield BytesIO(self._contents[member_path])
 
 
+class InaccessibleTestSplit(dict[str, object]):
+    """Fail immediately if a valid-only flow inspects Attachment 2 test fields."""
+
+    def __getitem__(self, key: str) -> object:
+        raise AssertionError("Attachment 2 test split must not be accessed")
+
+    def get(self, key: str, default: object = None) -> object:
+        raise AssertionError("Attachment 2 test split must not be accessed")
+
+
 class TinyTokenEncoder:
     def encode(self, token_rows: torch.Tensor) -> torch.Tensor:
         embeddings = torch.zeros(token_rows.shape[0], 50, 768, device=token_rows.device)
@@ -388,6 +398,35 @@ def test_run_q2_records_mult_lite_fusion_variant(tmp_path: Path) -> None:
 
     manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["training"]["fusion_variant"] == "mult_lite"
+
+
+def test_run_q2_records_shared_late_expert_fusion_without_accessing_test(tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": InaccessibleTestSplit(),
+        }
+    }
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+    config = replace(
+        runner_config(tmp_path),
+        output_dir=tmp_path / "q2-late-expert-output",
+        fusion_variant="late_expert_shared",
+        text_adapter_variant="identity",
+    )
+
+    summary = run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    with (config.output_dir / "attachment3_predictions.csv").open(encoding="utf-8", newline="") as stream:
+        predictions = list(csv.DictReader(stream))
+    assert summary["attachment3_count"] == 30
+    assert len(predictions) == 30
+    assert manifest["training"]["fusion_variant"] == "late_expert_shared"
+    assert manifest["training"]["text_adapter_variant"] == "identity"
 
 
 def test_run_q2_forwards_configured_regression_loss_weight_to_training(monkeypatch, tmp_path: Path) -> None:
@@ -808,6 +847,74 @@ def test_evaluate_saved_q2_valid_reconstructs_mult_lite_checkpoint(tmp_path: Pat
 
     assert report["sample_count"] == 3
     assert archive.verify_count == 1
+
+
+def test_evaluate_saved_q2_valid_strictly_reconstructs_shared_late_expert_checkpoint(monkeypatch, tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": InaccessibleTestSplit(),
+        }
+    }
+    archive = RunnerArchive(members)
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-late-expert-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="late_expert_shared",
+    )
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "fusion_variant": "late_expert_shared",
+                    "text_adapter_variant": "identity",
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed_strict: list[bool] = []
+    original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
+
+    def recording_load_state_dict(self, *args, **kwargs):
+        observed_strict.append(kwargs.get("strict", True))
+        return original_load_state_dict(self, *args, **kwargs)
+
+    monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "late-expert-valid-report.json",
+        archive=archive,
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert report["sample_count"] == 3
+    assert sum(sum(row) for row in report["confusion_matrix"]["counts"]) == 3
+    assert archive.verify_count == 1
+    assert observed_strict == [True]
 
 
 def test_evaluate_saved_q2_valid_rejects_unsupported_manifest_fusion_variant(tmp_path: Path) -> None:
