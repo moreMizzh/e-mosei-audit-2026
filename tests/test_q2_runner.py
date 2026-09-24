@@ -32,6 +32,28 @@ from e_mosei_audit.q2.runner import (
 import e_mosei_audit.q2.runner as q2_runner
 
 
+class RecordingOptimizer:
+    def __init__(self) -> None:
+        self.zero_grad_calls = 0
+        self.step_calls = 0
+
+    def zero_grad(self, *, set_to_none: bool) -> None:
+        assert set_to_none is True
+        self.zero_grad_calls += 1
+
+    def step(self) -> None:
+        self.step_calls += 1
+
+
+def flat_output(logits: torch.Tensor, score: torch.Tensor) -> Q2Output:
+    return Q2Output(
+        logits=logits,
+        score=score,
+        gates=torch.empty(0),
+        temporal_attention=torch.empty(0),
+    )
+
+
 def test_joint_loss_applies_configured_regression_weight() -> None:
     output = Q2Output(
         logits=torch.tensor([[1.0, 0.0, -1.0], [0.0, 1.0, -1.0]]),
@@ -173,6 +195,213 @@ def test_joint_loss_corn_all_negative_batch_uses_only_first_condition() -> None:
 
     assert torch.isfinite(actual)
     assert torch.allclose(actual, expected)
+
+
+def test_rdrop_joint_loss_matches_two_weighted_joint_losses_and_symmetric_kl() -> None:
+    view_one = flat_output(
+        torch.tensor([[1.0, -0.5, 0.25], [-0.25, 0.5, 1.0]], requires_grad=True),
+        torch.tensor([0.75, -0.5], requires_grad=True),
+    )
+    view_two = flat_output(
+        torch.tensor([[0.25, 0.75, -1.0], [1.25, -0.5, 0.0]], requires_grad=True),
+        torch.tensor([-0.25, 0.5], requires_grad=True),
+    )
+    labels = torch.tensor([0, 2])
+    scores = torch.tensor([0.0, -1.0])
+    class_weights = torch.tensor([1.0, 2.0, 1.5])
+    expected = 0.5 * (
+        _joint_loss(
+            view_one,
+            labels,
+            scores,
+            class_weights,
+            regression_loss_weight=0.25,
+            polarity_consistency_loss_weight=0.10,
+        )
+        + _joint_loss(
+            view_two,
+            labels,
+            scores,
+            class_weights,
+            regression_loss_weight=0.25,
+            polarity_consistency_loss_weight=0.10,
+        )
+    )
+    expected += 0.25 * (
+        torch.nn.functional.kl_div(
+            torch.nn.functional.log_softmax(view_one.logits, dim=1),
+            torch.nn.functional.softmax(view_two.logits, dim=1),
+            reduction="batchmean",
+        )
+        + torch.nn.functional.kl_div(
+            torch.nn.functional.log_softmax(view_two.logits, dim=1),
+            torch.nn.functional.softmax(view_one.logits, dim=1),
+            reduction="batchmean",
+        )
+    )
+
+    actual = q2_runner._rdrop_joint_loss(
+        view_one,
+        view_two,
+        labels,
+        scores,
+        class_weights,
+        regression_loss_weight=0.25,
+        polarity_consistency_loss_weight=0.10,
+    )
+
+    assert torch.allclose(actual, expected)
+    actual.backward()
+    for tensor in (view_one.logits, view_one.score, view_two.logits, view_two.score):
+        assert tensor.grad is not None
+        assert torch.isfinite(tensor.grad).all()
+
+
+def test_train_epoch_none_uses_one_forward_and_joint_loss(monkeypatch) -> None:
+    output = flat_output(
+        torch.tensor([[0.25, 0.5, -0.75]], requires_grad=True), torch.tensor([0.25], requires_grad=True)
+    )
+    labels = torch.tensor([1])
+    scores = torch.tensor([0.0])
+    calls: list[tuple[object, object, object, object, object]] = []
+    joint_outputs: list[Q2Output] = []
+    optimizer = RecordingOptimizer()
+    split = type("OneSampleSplit", (), {"sample_count": 1})()
+    batch_masks = object()
+
+    def fake_forward(model, encoder, passed_split, indexes, dropped, normalizer, device):
+        calls.append((passed_split, indexes, dropped, normalizer, device))
+        return output, labels, scores
+
+    def recording_joint_loss(passed_output, *args, **kwargs):
+        joint_outputs.append(passed_output)
+        return passed_output.logits.sum() + passed_output.score.sum()
+
+    monkeypatch.setattr(q2_runner, "_batch_indexes", lambda *args: [np.asarray([0])])
+    monkeypatch.setattr(q2_runner, "_slice_masks", lambda *args: batch_masks)
+    monkeypatch.setattr(q2_runner, "_forward_split", fake_forward)
+    monkeypatch.setattr(q2_runner, "_joint_loss", recording_joint_loss)
+
+    q2_runner._train_epoch(
+        torch.nn.Identity(),
+        object(),
+        optimizer,
+        split,
+        object(),
+        object(),
+        batch_size=1,
+        class_weights=torch.ones(3),
+        regression_loss_weight=0.5,
+        polarity_consistency_loss_weight=0.0,
+        dropout_consistency_variant="none",
+        synthetic_missingness_enabled=False,
+        rng=np.random.default_rng(7),
+        device=torch.device("cpu"),
+    )
+
+    assert len(calls) == 1
+    assert joint_outputs == [output]
+    assert optimizer.zero_grad_calls == 1
+    assert optimizer.step_calls == 1
+
+
+def test_train_epoch_rdrop_uses_two_forwards_with_one_mask_and_step(monkeypatch) -> None:
+    outputs = iter(
+        (
+            flat_output(
+                torch.tensor([[0.25, 0.5, -0.75]], requires_grad=True), torch.tensor([0.25], requires_grad=True)
+            ),
+            flat_output(
+                torch.tensor([[-0.5, 0.25, 0.75]], requires_grad=True), torch.tensor([-0.5], requires_grad=True)
+            ),
+        )
+    )
+    labels = torch.tensor([1])
+    scores = torch.tensor([0.0])
+    calls: list[tuple[object, object, object, object, object]] = []
+    optimizer = RecordingOptimizer()
+    split = type("OneSampleSplit", (), {"sample_count": 1})()
+    batch_masks = object()
+
+    def fake_forward(model, encoder, passed_split, indexes, dropped, normalizer, device):
+        calls.append((passed_split, indexes, dropped, normalizer, device))
+        return next(outputs), labels, scores
+
+    monkeypatch.setattr(q2_runner, "_batch_indexes", lambda *args: [np.asarray([0])])
+    monkeypatch.setattr(q2_runner, "_slice_masks", lambda *args: batch_masks)
+    monkeypatch.setattr(q2_runner, "_forward_split", fake_forward)
+
+    q2_runner._train_epoch(
+        torch.nn.Identity(),
+        object(),
+        optimizer,
+        split,
+        object(),
+        object(),
+        batch_size=1,
+        class_weights=torch.ones(3),
+        regression_loss_weight=0.5,
+        polarity_consistency_loss_weight=0.0,
+        dropout_consistency_variant="rdrop_alpha_1",
+        synthetic_missingness_enabled=False,
+        rng=np.random.default_rng(7),
+        device=torch.device("cpu"),
+    )
+
+    assert len(calls) == 2
+    assert calls[0][0] is calls[1][0]
+    assert calls[0][1] is calls[1][1]
+    assert calls[0][2] is calls[1][2]
+    assert calls[0][3] is calls[1][3]
+    assert calls[0][4] is calls[1][4]
+    assert optimizer.zero_grad_calls == 1
+    assert optimizer.step_calls == 1
+
+
+def test_train_epoch_rdrop_rejects_ordinal_outputs_before_optimizer_mutation(monkeypatch) -> None:
+    ordinal_output = Q2Output(
+        logits=torch.tensor([[0.25, 0.5, -0.75]], requires_grad=True),
+        score=torch.tensor([0.25], requires_grad=True),
+        gates=torch.empty(0),
+        temporal_attention=torch.empty(0),
+        ordinal_logits=torch.zeros((1, 2)),
+    )
+    labels = torch.tensor([1])
+    scores = torch.tensor([0.0])
+    forward_calls = 0
+    optimizer = RecordingOptimizer()
+    split = type("OneSampleSplit", (), {"sample_count": 1})()
+
+    def fake_forward(*args):
+        nonlocal forward_calls
+        forward_calls += 1
+        return ordinal_output, labels, scores
+
+    monkeypatch.setattr(q2_runner, "_batch_indexes", lambda *args: [np.asarray([0])])
+    monkeypatch.setattr(q2_runner, "_slice_masks", lambda *args: object())
+    monkeypatch.setattr(q2_runner, "_forward_split", fake_forward)
+
+    with pytest.raises(ValueError, match=r"\AR-Drop requires flat classification outputs\Z"):
+        q2_runner._train_epoch(
+            torch.nn.Identity(),
+            object(),
+            optimizer,
+            split,
+            object(),
+            object(),
+            batch_size=1,
+            class_weights=torch.ones(3),
+            regression_loss_weight=0.5,
+            polarity_consistency_loss_weight=0.0,
+            dropout_consistency_variant="rdrop_alpha_1",
+            synthetic_missingness_enabled=False,
+            rng=np.random.default_rng(7),
+            device=torch.device("cpu"),
+        )
+
+    assert forward_calls == 2
+    assert optimizer.zero_grad_calls == 0
+    assert optimizer.step_calls == 0
 
 
 def test_metric_summary_reports_accuracy_macro_f1_mae_and_pearson() -> None:
@@ -830,6 +1059,26 @@ def test_run_q2_forwards_configured_polarity_consistency_loss_weight_to_training
     assert observed_weights == [0.37]
     manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["training"]["polarity_consistency_loss_weight"] == 0.37
+
+
+def test_run_q2_forwards_dropout_consistency_variant_to_training(monkeypatch, tmp_path: Path) -> None:
+    observed_variants: list[str] = []
+    original_train_epoch = q2_runner._train_epoch
+
+    def recording_train_epoch(*args, **kwargs):
+        observed_variants.append(kwargs["dropout_consistency_variant"])
+        return original_train_epoch(*args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "_train_epoch", recording_train_epoch)
+    config = replace(
+        runner_config(tmp_path),
+        dropout=0.1,
+        dropout_consistency_variant="rdrop_alpha_1",
+    )
+
+    run_q2(config, archive=runner_archive_with_inaccessible_test(), token_encoder=TinyTokenEncoder())
+
+    assert observed_variants == ["rdrop_alpha_1"]
 
 
 def test_run_q2_skips_training_synthetic_missingness_when_disabled(monkeypatch, tmp_path: Path) -> None:

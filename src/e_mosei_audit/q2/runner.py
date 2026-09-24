@@ -22,6 +22,7 @@ from e_mosei_audit.archive import SevenZipArchive
 from e_mosei_audit.q2.config import (
     Q2Config,
     validate_classification_variant,
+    validate_dropout_consistency_variant,
     validate_fusion_variant,
     validate_temporal_position_variant,
     validate_temporal_pooling_variant,
@@ -234,6 +235,7 @@ def run_q2(
             class_weights=weights,
             regression_loss_weight=config.regression_loss_weight,
             polarity_consistency_loss_weight=config.polarity_consistency_loss_weight,
+            dropout_consistency_variant=config.dropout_consistency_variant,
             synthetic_missingness_enabled=config.synthetic_missingness_enabled,
             rng=generator,
             device=device,
@@ -593,11 +595,13 @@ def _train_epoch(
     class_weights: torch.Tensor,
     regression_loss_weight: float,
     polarity_consistency_loss_weight: float,
+    dropout_consistency_variant: str,
     synthetic_missingness_enabled: bool,
     rng: np.random.Generator,
     device: torch.device,
 ) -> None:
     model.train()
+    dropout_consistency_variant = validate_dropout_consistency_variant(dropout_consistency_variant)
     for indexes in _batch_indexes(split.sample_count, batch_size, rng):
         batch_masks = _slice_masks(masks, indexes)
         if synthetic_missingness_enabled:
@@ -607,14 +611,26 @@ def _train_epoch(
         else:
             dropped = DroppedMasks(masks=batch_masks, drops=())
         output, labels, scores = _forward_split(model, encoder, split, indexes, dropped, normalizer, device)
-        loss = _joint_loss(
-            output,
-            labels,
-            scores,
-            class_weights,
-            regression_loss_weight=regression_loss_weight,
-            polarity_consistency_loss_weight=polarity_consistency_loss_weight,
-        )
+        if dropout_consistency_variant == "none":
+            loss = _joint_loss(
+                output,
+                labels,
+                scores,
+                class_weights,
+                regression_loss_weight=regression_loss_weight,
+                polarity_consistency_loss_weight=polarity_consistency_loss_weight,
+            )
+        else:
+            second_output, _, _ = _forward_split(model, encoder, split, indexes, dropped, normalizer, device)
+            loss = _rdrop_joint_loss(
+                output,
+                second_output,
+                labels,
+                scores,
+                class_weights,
+                regression_loss_weight=regression_loss_weight,
+                polarity_consistency_loss_weight=polarity_consistency_loss_weight,
+            )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -635,6 +651,50 @@ def _joint_loss(
     expected_polarity = probabilities @ output.logits.new_tensor([-1.0, 0.0, 1.0])
     consistency = nn.functional.smooth_l1_loss(output.score / 3.0, expected_polarity)
     return classification + regression_loss_weight * regression + polarity_consistency_loss_weight * consistency
+
+
+def _rdrop_joint_loss(
+    view_one: Q2Output,
+    view_two: Q2Output,
+    labels: torch.Tensor,
+    scores: torch.Tensor,
+    class_weights: torch.Tensor,
+    *,
+    regression_loss_weight: float,
+    polarity_consistency_loss_weight: float,
+) -> torch.Tensor:
+    """Combine two flat classification views with fixed symmetric KL consistency."""
+
+    if view_one.ordinal_logits is not None or view_two.ordinal_logits is not None:
+        raise ValueError("R-Drop requires flat classification outputs")
+    joint = 0.5 * (
+        _joint_loss(
+            view_one,
+            labels,
+            scores,
+            class_weights,
+            regression_loss_weight=regression_loss_weight,
+            polarity_consistency_loss_weight=polarity_consistency_loss_weight,
+        )
+        + _joint_loss(
+            view_two,
+            labels,
+            scores,
+            class_weights,
+            regression_loss_weight=regression_loss_weight,
+            polarity_consistency_loss_weight=polarity_consistency_loss_weight,
+        )
+    )
+    divergence = nn.functional.kl_div(
+        nn.functional.log_softmax(view_one.logits, dim=1),
+        nn.functional.softmax(view_two.logits, dim=1),
+        reduction="batchmean",
+    ) + nn.functional.kl_div(
+        nn.functional.log_softmax(view_two.logits, dim=1),
+        nn.functional.softmax(view_one.logits, dim=1),
+        reduction="batchmean",
+    )
+    return joint + 0.25 * divergence
 
 
 def _classification_loss(output: Q2Output, labels: torch.Tensor, class_weights: torch.Tensor) -> torch.Tensor:
