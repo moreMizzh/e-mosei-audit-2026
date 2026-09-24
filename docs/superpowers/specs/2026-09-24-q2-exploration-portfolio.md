@@ -21,13 +21,14 @@
 ## 阶段记录
 
 - 候选 A 已完成：关闭训练合成缺失得到 clean macro-F1 `0.6165677806`，较 v4 提升 `0.0153150148`，且 27 场景 mean/worst macro-F1 同时提升。它未达到 `0.6212527658`，但成为 B-D 的顺序控制对照；后续每轮只在 A 上额外改变一个预注册处理。
+- 候选 B 已淘汰：在 A 上加入固定 `polarity_consistency_loss_weight=0.10` 后，clean macro-F1 为 `0.6054532088`，较 A 下降 `0.0111145718`；Neutral F1 从 `0.4890109890` 降至 `0.4573170732`，MAE 从 `0.6213405132` 恶化至 `0.7194830775`。即使最差缺失场景 F1 略升，也不满足 clean/Neutral/MAE 护栏，因此不调该系数。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-consistency-010.json`。
 
 ## 候选组合
 
 | 顺序 | 处理 | 假设与文献依据 | 工程大小 | 硬门槛 |
 | --- | --- | --- | --- | --- |
 | A（完成） | 关闭训练合成缺失 | 当前每个训练 batch 会遮蔽 1-2 个模态的 10%-50% 连续段；ModDrop 说明这类增强为鲁棒性服务，但完整输入性能可能与鲁棒性存在权衡。该对照的 clean 与场景 F1 均提高。[[ModDrop]](https://doi.org/10.1109/TPAMI.2015.2461544) | 小 | 未达两点门槛，但作为后续顺序对照。 |
-| B | 极性-强度一致性损失 | 让连续回归头与三分类期望极性一致，直接利用现有标签与双头，针对 Neutral 边界而不加模型参数。多任务情感分解可行性见 [[Tian et al.]](https://aclanthology.org/W18-3306/)。 | 小 | 固定 `consistency_loss_weight=0.10`；macro-F1 达目标，Neutral F1 不低于 v4，MAE 不高于 v4 `+0.01`。 |
+| B（淘汰） | 极性-强度一致性损失 | 让连续回归头与三分类期望极性一致，直接利用现有标签与双头，针对 Neutral 边界而不加模型参数。多任务情感分解可行性见 [[Tian et al.]](https://aclanthology.org/W18-3306/)。固定 `0.10` 使 macro-F1 和 MAE 同时恶化。 | 小 | 不调系数，进入 MAG-lite。 |
 | C | MAG-lite 非语言残差 | 先用掩码感知的 audio/vision 残差更新投影后的 text，再保留现有门控和时序 Transformer。MAG 的机制是向预训练语言表示注入非语言条件偏移；本项目冻结 BERT，因而只验证简化后置版本。[[MAG]](https://aclanthology.org/2020.acl-main.214/) | 中 | 单层固定结构，不解冻 BERT；macro-F1 达目标且 MAE 不高于 v4 `+0.02`。 |
 | D | MulT-lite 定向交叉注意力 | 在当前“先凸门控、后时序编码”的信息压缩前保留模态身份，以 text<-audio、text<-vision 等定向注意力建模跨时交互。[[MulT]](https://aclanthology.org/P19-1656/) | 中高 | 每个方向一层，所有 K/V 缺失时零更新；macro-F1 达目标，掩码测试与 27 场景完整。 |
 | E | 受控缺失课程或完整教师-遮蔽学生蒸馏 | 仅在 A 显示 clean/鲁棒明确冲突时使用。课程匹配现有 10/30/50% 场景；蒸馏比重建原始特征小，符合不完整模态自蒸馏思路。[[UMDF]](https://ojs.aaai.org/index.php/AAAI/article/view/28871/) [[TFR-Net]](https://doi.org/10.1145/3474085.3475585) | 中 | 先固定一个课程或一个蒸馏系数，不网格；clean 与最差场景 F1 都必须改善。 |
