@@ -38,6 +38,7 @@ polarity_consistency_loss_weight = 0.0
 class_weight_exponent = 1.0
 synthetic_missingness_enabled = true
 fusion_variant = "gated"
+text_adapter_variant = "identity"
 device = "cpu"
 """,
         encoding="utf-8",
@@ -54,6 +55,7 @@ device = "cpu"
     assert config.class_weight_exponent == 1.0
     assert config.synthetic_missingness_enabled is True
     assert config.fusion_variant == "gated"
+    assert config.text_adapter_variant == "identity"
     assert config.device == "cpu"
 
 
@@ -89,12 +91,98 @@ polarity_consistency_loss_weight = 0.0
 class_weight_exponent = 1.0
 synthetic_missingness_enabled = true
 fusion_variant = "{variant}"
+text_adapter_variant = "identity"
 device = "cpu"
 ''',
         encoding="utf-8",
     )
 
     assert load_q2_config(config_path).fusion_variant == variant
+
+
+@pytest.mark.parametrize("variant", ["identity", "houlsby_output_b32"])
+def test_load_q2_config_parses_supported_text_adapter_variant(tmp_path: Path, variant: str) -> None:
+    archive = tmp_path / "data.zip"
+    archive.write_bytes(b"zip")
+    seven_zip = tmp_path / "7za"
+    seven_zip.write_bytes(b"tool")
+    seven_zip.chmod(0o755)
+    bert_model = tmp_path / "bert-base-uncased"
+    bert_model.mkdir()
+    config_path = tmp_path / "q2.toml"
+    config_path.write_text(
+        f'''[paths]
+archive = "data.zip"
+seven_zip = "7za"
+bert_model = "bert-base-uncased"
+output_dir = "artifacts/q2"
+
+[training]
+seed = 7
+epochs = 3
+batch_size = 2
+learning_rate = 0.001
+weight_decay = 0.01
+hidden_size = 16
+heads = 4
+layers = 1
+dropout = 0.0
+regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
+class_weight_exponent = 1.0
+synthetic_missingness_enabled = true
+fusion_variant = "gated"
+text_adapter_variant = "{variant}"
+device = "cpu"
+''',
+        encoding="utf-8",
+    )
+
+    assert load_q2_config(config_path).text_adapter_variant == variant
+
+
+def test_load_q2_config_rejects_unsupported_text_adapter_variant(tmp_path: Path) -> None:
+    archive = tmp_path / "data.zip"
+    archive.write_bytes(b"zip")
+    seven_zip = tmp_path / "7za"
+    seven_zip.write_bytes(b"tool")
+    seven_zip.chmod(0o755)
+    bert_model = tmp_path / "bert-base-uncased"
+    bert_model.mkdir()
+    config_path = tmp_path / "q2.toml"
+    config_path.write_text(
+        '''[paths]
+archive = "data.zip"
+seven_zip = "7za"
+bert_model = "bert-base-uncased"
+output_dir = "artifacts/q2"
+
+[training]
+seed = 7
+epochs = 3
+batch_size = 2
+learning_rate = 0.001
+weight_decay = 0.01
+hidden_size = 16
+heads = 4
+layers = 1
+dropout = 0.0
+regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
+class_weight_exponent = 1.0
+synthetic_missingness_enabled = true
+fusion_variant = "gated"
+text_adapter_variant = "unsupported"
+device = "cpu"
+''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="text_adapter_variant must be one of: identity, houlsby_output_b32",
+    ):
+        load_q2_config(config_path)
 
 
 def test_load_q2_config_rejects_unsupported_fusion_variant(tmp_path: Path) -> None:
@@ -128,6 +216,7 @@ polarity_consistency_loss_weight = 0.0
 class_weight_exponent = 1.0
 synthetic_missingness_enabled = true
 fusion_variant = "unsupported"
+text_adapter_variant = "identity"
 device = "cpu"
 ''',
         encoding="utf-8",
@@ -174,6 +263,7 @@ polarity_consistency_loss_weight = 0.0
 class_weight_exponent = 1.0
 synthetic_missingness_enabled = {value}
 fusion_variant = "gated"
+text_adapter_variant = "identity"
 device = "cpu"
 ''',
         encoding="utf-8",
@@ -241,6 +331,7 @@ polarity_consistency_loss_weight = {value if field == "polarity_consistency_loss
 class_weight_exponent = {value if field == "class_weight_exponent" else "1.0"}
 synthetic_missingness_enabled = true
 fusion_variant = "gated"
+text_adapter_variant = "identity"
 device = "cpu"
 ''',
         encoding="utf-8",
@@ -282,6 +373,7 @@ polarity_consistency_loss_weight = 0.0
 class_weight_exponent = 1.0
 synthetic_missingness_enabled = true
 fusion_variant = "gated"
+text_adapter_variant = "identity"
 device = "cpu"
 ''',
         encoding="utf-8",

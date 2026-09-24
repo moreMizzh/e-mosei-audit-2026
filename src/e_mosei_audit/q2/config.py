@@ -12,6 +12,7 @@ import tomllib
 
 _PATH_FIELDS = ("archive", "seven_zip", "bert_model", "output_dir")
 FUSION_VARIANTS = ("gated", "mag_lite", "mult_lite")
+TEXT_ADAPTER_VARIANTS = ("identity", "houlsby_output_b32")
 _TRAINING_FIELDS = (
     "seed",
     "epochs",
@@ -27,6 +28,7 @@ _TRAINING_FIELDS = (
     "class_weight_exponent",
     "synthetic_missingness_enabled",
     "fusion_variant",
+    "text_adapter_variant",
     "device",
 )
 
@@ -51,6 +53,7 @@ class Q2Config:
     class_weight_exponent: float
     synthetic_missingness_enabled: bool
     fusion_variant: str
+    text_adapter_variant: str
     device: str
 
 
@@ -93,6 +96,7 @@ def load_q2_config(path: Path) -> Q2Config:
         class_weight_exponent=float(values["class_weight_exponent"]),
         synthetic_missingness_enabled=values["synthetic_missingness_enabled"],
         fusion_variant=validate_fusion_variant(values["fusion_variant"]),
+        text_adapter_variant=validate_text_adapter_variant(values["text_adapter_variant"]),
         device=values["device"],
     )
 
@@ -176,6 +180,7 @@ def _validate_training(values: Mapping[str, object]) -> None:
     if not isinstance(values["synthetic_missingness_enabled"], bool):
         raise ValueError("synthetic_missingness_enabled must be boolean")
     validate_fusion_variant(values["fusion_variant"])
+    validate_text_adapter_variant(values["text_adapter_variant"])
     if values["hidden_size"] % values["heads"]:
         raise ValueError("hidden_size must be divisible by heads")
     if not isinstance(values["device"], str) or not values["device"]:
@@ -187,4 +192,12 @@ def validate_fusion_variant(value: object) -> str:
 
     if not isinstance(value, str) or value not in FUSION_VARIANTS:
         raise ValueError("fusion_variant must be one of: gated, mag_lite, mult_lite")
+    return value
+
+
+def validate_text_adapter_variant(value: object) -> str:
+    """Require one of the persisted Q2 text output adapter names."""
+
+    if not isinstance(value, str) or value not in TEXT_ADAPTER_VARIANTS:
+        raise ValueError("text_adapter_variant must be one of: identity, houlsby_output_b32")
     return value

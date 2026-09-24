@@ -201,6 +201,7 @@ def _q2_config(tmp_path: Path) -> Q2Config:
         class_weight_exponent=1.0,
         synthetic_missingness_enabled=True,
         fusion_variant="gated",
+        text_adapter_variant="identity",
         device="cpu",
     )
 
