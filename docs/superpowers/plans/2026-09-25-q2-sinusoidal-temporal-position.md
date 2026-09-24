@@ -150,9 +150,9 @@ Expected: all runner/CLI tests pass while test-split sentinels remain unaccessed
 **Files:**
 - Create: artifacts/q2-valid-sinusoidal-temporal-position/ (ignored runtime output only)
 - Modify: README.md:3-54 after the actual result exists
-- Modify: docs/portfolio/q2-valid-experiment-records.md after the actual result exists
+- Modify: docs/superpowers/specs/2026-09-24-q2-exploration-portfolio.md after the actual result exists
 
-- [ ] **Step 1: Run complete regression verification and review the exact diff**
+- [x] **Step 1: Run complete regression verification and review the exact diff**
 
 Run:
 
@@ -162,7 +162,7 @@ Run:
 
 Expected: all non-opt-in tests pass, no whitespace errors, and only planned files differ.
 
-- [ ] **Step 2: Create M config from A with exactly one training difference**
+- [x] **Step 2: Create M config from A with exactly one training difference**
 
 Copy the exact control-A local config. Set only:
 
@@ -171,7 +171,7 @@ Copy the exact control-A local config. Set only:
 
 Retain seed=20260924, fusion_variant="gated", and synthetic_missingness_enabled=false. Do not create a test target.
 
-- [ ] **Step 3: Verify preflight and output absence**
+- [x] **Step 3: Verify preflight and output absence**
 
 Run:
 
@@ -180,7 +180,7 @@ Run:
 
 Expected: train_count=3395, valid_count=728, attachment3_count=30, without output creation.
 
-- [ ] **Step 4: Execute exactly one M run and reconstruct saved valid predictions**
+- [x] **Step 4: Execute exactly one M run and reconstruct saved valid predictions**
 
 Run exactly once:
 
@@ -189,13 +189,13 @@ Run exactly once:
 
 Compare saved and recomputed clean metrics. Require 728 valid predictions, 27 scenarios, 30 Attachment 3 rows, temporal_position_variant="sinusoidal" in the manifest, and no test member in the run path.
 
-- [ ] **Step 5: Record the actual decision without test evaluation**
+- [x] **Step 5: Record the actual decision without test evaluation**
 
 Write the A/M comparison JSON, update only the README Val row and Test 未评估 row, and append the portfolio record. Accept only if clean valid macro-F1 is at least 0.6212527658; otherwise record actual metrics and permanently retire this exact fixed variant without tuning it.
 
 - [ ] **Step 6: Commit documentation only after result verification**
 
-    git add README.md docs/portfolio/q2-valid-experiment-records.md
+    git add README.md docs/superpowers/specs/2026-09-24-q2-exploration-portfolio.md
     git commit -m "docs: record Q2 sinusoidal position result"
 
 ## Plan Review
