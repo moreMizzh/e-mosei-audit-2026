@@ -281,6 +281,7 @@ def runner_config(tmp_path: Path) -> Q2Config:
         synthetic_missingness_enabled=True,
         fusion_variant="gated",
         text_adapter_variant="identity",
+        classification_variant="flat",
         device="cpu",
     )
 

@@ -13,6 +13,7 @@ import tomllib
 _PATH_FIELDS = ("archive", "seven_zip", "bert_model", "output_dir")
 FUSION_VARIANTS = ("gated", "mag_lite", "mult_lite", "late_expert_shared")
 TEXT_ADAPTER_VARIANTS = ("identity", "houlsby_output_b32")
+CLASSIFICATION_VARIANTS = ("flat", "corn")
 _TRAINING_FIELDS = (
     "seed",
     "epochs",
@@ -29,6 +30,7 @@ _TRAINING_FIELDS = (
     "synthetic_missingness_enabled",
     "fusion_variant",
     "text_adapter_variant",
+    "classification_variant",
     "device",
 )
 
@@ -54,6 +56,7 @@ class Q2Config:
     synthetic_missingness_enabled: bool
     fusion_variant: str
     text_adapter_variant: str
+    classification_variant: str
     device: str
 
 
@@ -97,6 +100,7 @@ def load_q2_config(path: Path) -> Q2Config:
         synthetic_missingness_enabled=values["synthetic_missingness_enabled"],
         fusion_variant=validate_fusion_variant(values["fusion_variant"]),
         text_adapter_variant=validate_text_adapter_variant(values["text_adapter_variant"]),
+        classification_variant=validate_classification_variant(values["classification_variant"]),
         device=values["device"],
     )
 
@@ -181,6 +185,7 @@ def _validate_training(values: Mapping[str, object]) -> None:
         raise ValueError("synthetic_missingness_enabled must be boolean")
     validate_fusion_variant(values["fusion_variant"])
     validate_text_adapter_variant(values["text_adapter_variant"])
+    validate_classification_variant(values["classification_variant"])
     if values["hidden_size"] % values["heads"]:
         raise ValueError("hidden_size must be divisible by heads")
     if not isinstance(values["device"], str) or not values["device"]:
@@ -200,4 +205,12 @@ def validate_text_adapter_variant(value: object) -> str:
 
     if not isinstance(value, str) or value not in TEXT_ADAPTER_VARIANTS:
         raise ValueError("text_adapter_variant must be one of: identity, houlsby_output_b32")
+    return value
+
+
+def validate_classification_variant(value: object) -> str:
+    """Require one of the persisted Q2 classification parameterizations."""
+
+    if not isinstance(value, str) or value not in CLASSIFICATION_VARIANTS:
+        raise ValueError("classification_variant must be one of: flat, corn")
     return value
