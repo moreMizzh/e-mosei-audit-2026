@@ -416,6 +416,40 @@ def test_run_q2_records_mag_lite_fusion_variant(tmp_path: Path) -> None:
     assert manifest["training"]["fusion_variant"] == "mag_lite"
 
 
+def test_run_q2_records_pairwise_hadamard_residual_without_test_split_access(tmp_path: Path) -> None:
+    aligned_payload = TrainValidPayloadWithInaccessibleTest(
+        {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "an accessible Q2 runtime input"},
+        }
+    )
+    with pytest.raises(AssertionError, match="Attachment 2 test split must not be accessed"):
+        aligned_payload["test"]
+    with pytest.raises(AssertionError, match="Attachment 2 test split must not be accessed"):
+        aligned_payload.get("test")
+    members: dict[str, object] = {ALIGNED_50_MEMBER: aligned_payload}
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+    archive = RunnerArchive(members)
+    config = replace(
+        runner_config(tmp_path),
+        output_dir=tmp_path / "q2-pairwise-hadamard-output",
+        fusion_variant="pairwise_hadamard_residual",
+    )
+
+    summary = run_q2(config, archive=archive, token_encoder=TinyTokenEncoder())
+
+    with (config.output_dir / "attachment3_predictions.csv").open(encoding="utf-8", newline="") as stream:
+        predictions = list(csv.DictReader(stream))
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert summary["attachment3_count"] == 30
+    assert len(predictions) == 30
+    assert manifest["training"]["fusion_variant"] == "pairwise_hadamard_residual"
+    assert archive.verify_count == 1
+
+
 def test_run_q2_records_houlsby_text_adapter_variant_with_gated_fusion(tmp_path: Path) -> None:
     members: dict[str, object] = {
         ALIGNED_50_MEMBER: {
@@ -1138,6 +1172,86 @@ def test_evaluate_saved_q2_valid_strictly_reconstructs_text_anchor_residual_chec
     assert archive.verify_count == 1
     assert observed_strict == [True]
     assert observed_fusion_variants == ["text_anchor_residual"]
+
+
+def test_evaluate_saved_q2_valid_strictly_reconstructs_pairwise_hadamard_residual_checkpoint(
+    monkeypatch, tmp_path: Path
+) -> None:
+    aligned_payload = TrainValidPayloadWithInaccessibleTest(
+        {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "an accessible Q2 runtime input"},
+        }
+    )
+    archive = RunnerArchive({ALIGNED_50_MEMBER: aligned_payload})
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-pairwise-hadamard-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="pairwise_hadamard_residual",
+    )
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "fusion_variant": "pairwise_hadamard_residual",
+                    "text_adapter_variant": "identity",
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed_strict: list[bool] = []
+    observed_variants: list[str] = []
+    original_model_constructor = q2_runner.MaskAwareTemporalFusion
+    original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
+
+    def recording_model_constructor(*args, **kwargs):
+        observed_variants.append(kwargs["fusion_variant"])
+        return original_model_constructor(*args, **kwargs)
+
+    def recording_load_state_dict(self, *args, **kwargs):
+        assert kwargs["strict"] is True
+        observed_strict.append(kwargs["strict"])
+        return original_load_state_dict(self, *args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", recording_model_constructor)
+    monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "pairwise-hadamard-valid-report.json",
+        archive=archive,
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert report["sample_count"] == 3
+    assert set(report["metrics"]) == {"accuracy", "macro_f1", "mae", "pearson"}
+    assert sum(sum(row) for row in report["confusion_matrix"]["counts"]) == 3
+    assert archive.verify_count == 1
+    assert observed_strict == [True]
+    assert observed_variants == ["pairwise_hadamard_residual"]
 
 
 def test_evaluate_saved_q2_valid_strictly_reconstructs_corn_checkpoint(monkeypatch, tmp_path: Path) -> None:
