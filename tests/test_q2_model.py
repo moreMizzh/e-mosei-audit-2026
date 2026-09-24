@@ -21,13 +21,25 @@ class FakeBert(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.probe = nn.Parameter(torch.ones(1))
-        self.calls: tuple[torch.Tensor, torch.Tensor, torch.Tensor, bool] | None = None
+        self.calls: tuple[torch.Tensor, torch.Tensor, torch.Tensor, bool, bool] | None = None
 
     def forward(
-        self, *, input_ids: torch.Tensor, attention_mask: torch.Tensor, token_type_ids: torch.Tensor
+        self,
+        *,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        token_type_ids: torch.Tensor,
+        output_hidden_states: bool = False,
     ) -> SimpleNamespace:
-        self.calls = (input_ids, attention_mask, token_type_ids, torch.is_grad_enabled())
-        return SimpleNamespace(last_hidden_state=torch.ones(input_ids.shape[0], input_ids.shape[1], 768))
+        self.calls = (input_ids, attention_mask, token_type_ids, torch.is_grad_enabled(), output_hidden_states)
+        hidden_states = tuple(
+            torch.full((input_ids.shape[0], input_ids.shape[1], 768), float(layer), device=input_ids.device)
+            for layer in range(1, 5)
+        )
+        return SimpleNamespace(
+            last_hidden_state=hidden_states[-1],
+            hidden_states=hidden_states if output_hidden_states else None,
+        )
 
 
 class RecordingAttention(nn.Module):
@@ -1585,21 +1597,139 @@ def test_mask_aware_fusion_rejects_unsupported_fusion_variant() -> None:
         MaskAwareTemporalFusion(fusion_variant="unsupported")
 
 
-def test_frozen_bert_encoder_uses_three_token_rows_without_gradients() -> None:
-    bert = FakeBert()
-    encoder = FrozenBertEncoder(bert, device=torch.device("cpu"))
-    tokens = torch.zeros(2, 3, 50, dtype=torch.int64)
+def token_rows(*, batch_size: int = 2) -> torch.Tensor:
+    """Return valid BERT ids, attention masks, and token types for a batch."""
+
+    tokens = torch.zeros(batch_size, 3, 50, dtype=torch.int64)
     tokens[:, 0, 0] = 101
     tokens[:, 1, 0] = 1
+    return tokens
 
-    embeddings = encoder.encode(tokens)
 
-    assert embeddings.shape == (2, 50, 768)
+def test_frozen_bert_encoder_default_uses_final_layer_without_trainable_state() -> None:
+    bert = FakeBert()
+    encoder = FrozenBertEncoder(bert, device=torch.device("cpu"), text_encoder_variant="last_hidden_state")
+
+    embeddings = encoder.encode(token_rows())
+
+    assert encoder.text_encoder_variant == "last_hidden_state"
+    assert torch.equal(embeddings, torch.full((2, 50, 768), 4.0))
+    assert encoder.trainable_parameters() == ()
+    assert encoder.trainable_state_dict() == {}
+    with pytest.raises(ValueError, match=r"\Adefault frozen BERT encoder has no trainable state\Z"):
+        encoder.load_trainable_state_dict({"layer_logits": torch.zeros(4), "scale": torch.ones(())})
     assert bert.training is False
     assert bert.probe.requires_grad is False
+    assert bert.probe.grad is None
     assert bert.calls is not None
     assert bert.calls[0].shape == (2, 50)
     assert bert.calls[3] is False
+    assert bert.calls[4] is False
+
+
+def test_frozen_bert_encoder_scalar_mix_initializes_five_values_without_rng_change() -> None:
+    torch.manual_seed(211)
+    _ = FakeBert()
+    expected_successor = torch.rand(5)
+
+    torch.manual_seed(211)
+    encoder = FrozenBertEncoder(
+        FakeBert(),
+        device=torch.device("cpu"),
+        text_encoder_variant="last4_scalar_mix",
+    )
+    actual_successor = torch.rand(5)
+
+    assert encoder.text_encoder_variant == "last4_scalar_mix"
+    assert encoder.layer_logits.shape == (4,)
+    assert encoder.scale.shape == ()
+    assert torch.equal(encoder.layer_logits, torch.zeros(4))
+    assert torch.equal(encoder.scale, torch.ones(()))
+    assert sum(parameter.numel() for parameter in encoder.trainable_parameters()) == 5
+    assert torch.equal(actual_successor, expected_successor)
+
+
+def test_frozen_bert_encoder_scalar_mix_returns_the_final_four_layer_mean() -> None:
+    bert = FakeBert()
+    encoder = FrozenBertEncoder(
+        bert,
+        device=torch.device("cpu"),
+        text_encoder_variant="last4_scalar_mix",
+    )
+
+    embeddings = encoder.encode(token_rows())
+
+    assert embeddings.shape == (2, 50, 768)
+    assert torch.equal(embeddings, torch.full((2, 50, 768), 2.5))
+    assert bert.calls is not None
+    assert bert.calls[3] is False
+    assert bert.calls[4] is True
+
+
+def test_frozen_bert_encoder_scalar_mix_gradients_do_not_reach_bert() -> None:
+    bert = FakeBert()
+    encoder = FrozenBertEncoder(
+        bert,
+        device=torch.device("cpu"),
+        text_encoder_variant="last4_scalar_mix",
+    )
+
+    embeddings = encoder.encode(token_rows())
+    embeddings.square().mean().backward()
+
+    for parameter in (encoder.layer_logits, encoder.scale):
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
+        assert parameter.grad.abs().sum() > 0
+    for parameter in bert.parameters():
+        assert parameter.requires_grad is False
+        assert parameter.grad is None
+
+
+def test_frozen_bert_encoder_scalar_mix_strictly_round_trips_trainable_state() -> None:
+    encoder = FrozenBertEncoder(
+        FakeBert(),
+        device=torch.device("cpu"),
+        text_encoder_variant="last4_scalar_mix",
+    )
+    expected = {
+        "layer_logits": torch.tensor([-0.4, -0.1, 0.2, 0.5]),
+        "scale": torch.tensor(1.25),
+    }
+
+    encoder.load_trainable_state_dict(expected)
+    state = encoder.trainable_state_dict()
+
+    assert set(state) == {"layer_logits", "scale"}
+    assert all(value.device.type == "cpu" and not value.requires_grad for value in state.values())
+    assert torch.equal(state["layer_logits"], expected["layer_logits"])
+    assert torch.equal(state["scale"], expected["scale"])
+    state["layer_logits"].fill_(99.0)
+    assert not torch.equal(encoder.layer_logits, state["layer_logits"])
+    assert all("model" not in name and "probe" not in name for name in state)
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        {"layer_logits": torch.zeros(4)},
+        {"layer_logits": torch.zeros(4), "scale": torch.ones(()), "unexpected": torch.zeros(1)},
+        {"layer_logits": [0.0, 0.0, 0.0, 0.0], "scale": torch.ones(())},
+        {"layer_logits": torch.full((4,), float("nan")), "scale": torch.ones(())},
+        {"layer_logits": torch.zeros(4), "scale": torch.tensor(float("inf"))},
+        {"layer_logits": torch.zeros(3), "scale": torch.ones(())},
+        {"layer_logits": torch.zeros(4), "scale": torch.ones(1)},
+    ),
+)
+def test_frozen_bert_encoder_scalar_mix_rejects_invalid_trainable_state(state: object) -> None:
+    encoder = FrozenBertEncoder(
+        FakeBert(),
+        device=torch.device("cpu"),
+        text_encoder_variant="last4_scalar_mix",
+    )
+
+    with pytest.raises(ValueError):
+        encoder.load_trainable_state_dict(state)
 
 
 def test_sinusoidal_position_encoding_uses_vaswani_pairs_for_odd_hidden_width() -> None:

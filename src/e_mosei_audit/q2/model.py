@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from e_mosei_audit.q2.config import (
     validate_classification_variant,
     validate_fusion_variant,
     validate_text_adapter_variant,
+    validate_text_encoder_variant,
     validate_temporal_position_variant,
     validate_temporal_pooling_variant,
 )
@@ -46,14 +48,30 @@ class Q2Output:
 class FrozenBertEncoder:
     """Offline BERT feature encoder shared by Attachment 2 and Attachment 3."""
 
-    def __init__(self, model: nn.Module, *, device: torch.device) -> None:
+    def __init__(
+        self,
+        model: nn.Module,
+        *,
+        device: torch.device,
+        text_encoder_variant: str = "last_hidden_state",
+    ) -> None:
         self.device = device
+        self.text_encoder_variant = validate_text_encoder_variant(text_encoder_variant)
         self.model = model.to(device)
         self.model.eval()
         self.model.requires_grad_(False)
+        if self.text_encoder_variant == "last4_scalar_mix":
+            self.layer_logits = nn.Parameter(torch.zeros(4, device=device))
+            self.scale = nn.Parameter(torch.ones((), device=device))
 
     @classmethod
-    def from_local(cls, model_path: Path, *, device: torch.device) -> "FrozenBertEncoder":
+    def from_local(
+        cls,
+        model_path: Path,
+        *,
+        device: torch.device,
+        text_encoder_variant: str = "last_hidden_state",
+    ) -> "FrozenBertEncoder":
         """Load the required local BERT cache without any network fallback."""
 
         try:
@@ -63,7 +81,49 @@ class FrozenBertEncoder:
         model = BertModel.from_pretrained(str(model_path), local_files_only=True)
         if getattr(model.config, "hidden_size", None) != 768:
             raise ValueError("local BERT model must emit hidden size 768")
-        return cls(model, device=device)
+        return cls(model, device=device, text_encoder_variant=text_encoder_variant)
+
+    def trainable_parameters(self) -> tuple[nn.Parameter, ...]:
+        """Return only the representation parameters kept outside frozen BERT."""
+
+        if self.text_encoder_variant == "last4_scalar_mix":
+            return (self.layer_logits, self.scale)
+        return ()
+
+    def trainable_state_dict(self) -> dict[str, torch.Tensor]:
+        """Return a detached CPU checkpoint containing no BERT weights."""
+
+        if self.text_encoder_variant == "last_hidden_state":
+            return {}
+        return {
+            "layer_logits": self.layer_logits.detach().cpu().clone(),
+            "scale": self.scale.detach().cpu().clone(),
+        }
+
+    def load_trainable_state_dict(self, state: Mapping[str, object]) -> None:
+        """Strictly restore the scalar-mix parameters without loading frozen BERT."""
+
+        if not isinstance(state, Mapping):
+            raise ValueError("frozen BERT trainable state must be a mapping")
+        if self.text_encoder_variant == "last_hidden_state":
+            if state:
+                raise ValueError("default frozen BERT encoder has no trainable state")
+            return
+        expected = {"layer_logits": (4,), "scale": ()}
+        if set(state) != set(expected):
+            raise ValueError("scalar-mix trainable state must contain exactly: layer_logits, scale")
+        parameters = {"layer_logits": self.layer_logits, "scale": self.scale}
+        for name, expected_shape in expected.items():
+            value = state[name]
+            if not isinstance(value, torch.Tensor):
+                raise ValueError(f"scalar-mix state {name} must be a tensor")
+            if value.shape != expected_shape:
+                raise ValueError(f"scalar-mix state {name} has wrong shape")
+            if not torch.isfinite(value).all():
+                raise ValueError(f"scalar-mix state {name} must be finite")
+        with torch.no_grad():
+            for name, parameter in parameters.items():
+                parameter.copy_(state[name].to(device=self.device, dtype=parameter.dtype))
 
     def encode(self, token_rows: torch.Tensor) -> torch.Tensor:
         """Encode BERT token ids, attention mask, and token types from `[B, 3, 50]`."""
@@ -74,14 +134,36 @@ class FrozenBertEncoder:
             raise ValueError("text_bert tensor must use int64 token values")
         values = token_rows.to(self.device)
         with torch.no_grad():
-            output: Any = self.model(
-                input_ids=values[:, 0, :],
-                attention_mask=values[:, 1, :],
-                token_type_ids=values[:, 2, :],
-            )
-        embeddings = output.last_hidden_state
+            if self.text_encoder_variant == "last4_scalar_mix":
+                output: Any = self.model(
+                    input_ids=values[:, 0, :],
+                    attention_mask=values[:, 1, :],
+                    token_type_ids=values[:, 2, :],
+                    output_hidden_states=True,
+                )
+            else:
+                output = self.model(
+                    input_ids=values[:, 0, :],
+                    attention_mask=values[:, 1, :],
+                    token_type_ids=values[:, 2, :],
+                )
+        if self.text_encoder_variant == "last4_scalar_mix":
+            hidden_states = getattr(output, "hidden_states", None)
+            if not isinstance(hidden_states, tuple) or len(hidden_states) < 4:
+                raise ValueError("BERT scalar mix requires at least four hidden states")
+            final_four = hidden_states[-4:]
+            expected_shape = (values.shape[0], 50, 768)
+            if any(not isinstance(layer, torch.Tensor) or layer.shape != expected_shape for layer in final_four):
+                raise ValueError("BERT scalar mix hidden states must each have shape [B, 50, 768]")
+            layers = torch.stack(final_four)
+            weights = torch.softmax(self.layer_logits, dim=0).view(4, 1, 1, 1)
+            embeddings = self.scale * (weights * layers).sum(dim=0)
+        else:
+            embeddings = output.last_hidden_state
         if not isinstance(embeddings, torch.Tensor) or embeddings.shape != (values.shape[0], 50, 768):
             raise ValueError("BERT encoder must return [B, 50, 768] last_hidden_state")
+        if not torch.isfinite(embeddings).all():
+            raise ValueError("BERT encoder embeddings must be finite")
         return embeddings
 
 
