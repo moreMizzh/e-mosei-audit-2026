@@ -297,6 +297,34 @@ def test_run_q2_skips_training_synthetic_missingness_when_disabled(monkeypatch, 
     assert manifest["training"]["synthetic_missingness"]["enabled"] is False
 
 
+def test_run_q2_applies_training_synthetic_missingness_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a training or validation input"},
+        }
+    }
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+    invocations: list[tuple[object, object]] = []
+    original_apply_contiguous_drop = q2_runner.apply_contiguous_drop
+
+    def recording_apply_contiguous_drop(*args, **kwargs):
+        invocations.append((args, kwargs))
+        return original_apply_contiguous_drop(*args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "apply_contiguous_drop", recording_apply_contiguous_drop)
+    config = replace(runner_config(tmp_path), synthetic_missingness_enabled=True)
+
+    run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert invocations
+    assert manifest["training"]["synthetic_missingness"]["enabled"] is True
+
+
 def test_class_weights_use_normalized_inverse_frequency_exponent() -> None:
     labels = np.array([0, 0, 1, 2], dtype=np.int64)
 
