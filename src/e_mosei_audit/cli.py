@@ -11,7 +11,7 @@ from .archive import ArchiveError, SevenZipArchive
 from .q1.config import load_config
 from .q1.runner import run_q1
 from .q2.config import load_q2_config
-from .q2.runner import check_q2, run_q2
+from .q2.runner import check_q2, evaluate_saved_q2_valid, run_q2
 from .workflow import run_audit
 
 
@@ -63,6 +63,16 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         return 0
 
+    if arguments.command == "evaluate-q2-valid":
+        try:
+            summary = evaluate_saved_q2_valid(Path(arguments.run_dir), Path(arguments.output))
+        except (ArchiveError, FileExistsError, OSError, RuntimeError, ValueError) as error:
+            print(f"e-mosei-audit: {error}", file=sys.stderr)
+            return 2
+
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        return 0
+
     parser.error(f"unsupported command: {arguments.command}")
 
 
@@ -88,6 +98,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     q2.add_argument("--config", required=True, help="TOML path with explicit local Q2 paths and parameters")
     q2.add_argument("--check", action="store_true", help="verify Q2 inputs without training or writing an output")
+    evaluate_q2 = commands.add_parser(
+        "evaluate-q2-valid", help="evaluate one saved Q2 checkpoint on Attachment 2 valid only"
+    )
+    evaluate_q2.add_argument("--run-dir", required=True, help="existing Q2 run directory with model.pt and run_manifest.json")
+    evaluate_q2.add_argument("--output", required=True, help="new JSON path for the valid-only classification report")
     return parser
 
 

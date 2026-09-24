@@ -14,12 +14,16 @@ import torch
 from e_mosei_audit.archive import ArchiveMember
 from e_mosei_audit.q2.config import Q2Config
 from e_mosei_audit.q2.data import ALIGNED_50_MEMBER
+from e_mosei_audit.q2.missingness import FeatureNormalizer
+from e_mosei_audit.q2.model import MaskAwareTemporalFusion
 from e_mosei_audit.q2.runner import (
     Prediction,
     _publish_staging,
     _validate_output_target,
     check_q2,
+    classification_report,
     compute_metrics,
+    evaluate_saved_q2_valid,
     run_q2,
     write_predictions,
 )
@@ -45,6 +49,33 @@ def test_metric_summary_returns_none_pearson_for_constant_targets() -> None:
     )
 
     assert metrics["pearson"] is None
+
+
+def test_classification_report_returns_confusion_matrix_and_per_class_metrics() -> None:
+    report = classification_report(
+        true_classes=np.array([0, 0, 0, 1, 1, 2]),
+        predicted_classes=np.array([0, 0, 1, 1, 2, 2]),
+    )
+
+    assert report["confusion_matrix"] == {
+        "rows": "true_class",
+        "columns": "predicted_class",
+        "labels": ["Negative", "Neutral", "Positive"],
+        "counts": [[2, 1, 0], [0, 1, 1], [0, 0, 1]],
+    }
+    assert report["per_class"] == {
+        "Negative": {"label": 0, "support": 3, "precision": 1.0, "recall": 2 / 3, "f1": 0.8},
+        "Neutral": {"label": 1, "support": 2, "precision": 0.5, "recall": 0.5, "f1": 0.5},
+        "Positive": {"label": 2, "support": 1, "precision": 0.5, "recall": 1.0, "f1": 2 / 3},
+    }
+
+
+def test_classification_report_rejects_classes_outside_the_fixed_three_labels() -> None:
+    with pytest.raises(ValueError, match="classes must only contain 0, 1, or 2"):
+        classification_report(
+            true_classes=np.array([0, 3]),
+            predicted_classes=np.array([0, 2]),
+        )
 
 
 def test_prediction_csv_uses_fixed_polarity_mapping(tmp_path: Path) -> None:
@@ -168,11 +199,14 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     with (config.output_dir / "validation_scenarios.csv").open(encoding="utf-8", newline="") as stream:
         scenarios = list(csv.DictReader(stream))
     metrics = json.loads((config.output_dir / "metrics.json").read_text(encoding="utf-8"))
+    classification = json.loads((config.output_dir / "valid_classification_report.json").read_text(encoding="utf-8"))
     report = (config.output_dir / "audit_report.md").read_text(encoding="utf-8")
     assert summary["attachment3_count"] == 30
     assert len(predictions) == 30
     assert len(scenarios) == 27
     assert set(metrics["clean"]) == {"accuracy", "macro_f1", "mae", "pearson"}
+    assert classification["confusion_matrix"]["labels"] == ["Negative", "Neutral", "Positive"]
+    assert sum(sum(row) for row in classification["confusion_matrix"]["counts"]) == 3
     assert {
         "target_available_positions",
         "dropped_available_positions",
@@ -221,6 +255,103 @@ def test_check_q2_verifies_inputs_without_training_or_creating_output(tmp_path: 
     assert summary == {"train_count": 3, "valid_count": 3, "attachment3_count": 30}
     assert archive.verify_count == 1
     assert not config.output_dir.exists()
+
+
+def test_evaluate_saved_q2_valid_writes_report_without_accessing_test(tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a valid evaluation input"},
+        }
+    }
+    archive = RunnerArchive(members)
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "valid-report.json"
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        output,
+        archive=archive,
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert json.loads(output.read_text(encoding="utf-8")) == report
+    assert report["sample_count"] == 3
+    assert sum(sum(row) for row in report["confusion_matrix"]["counts"]) == 3
+    assert set(report["prediction_score_summary"]) == {"mean", "std", "min", "max"}
+    assert archive.verify_count == 1
+
+
+def test_evaluate_saved_q2_valid_rejects_manifest_with_missing_normalizer_field(tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a valid evaluation input"},
+        }
+    }
+    archive = RunnerArchive(members)
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "device": "cpu",
+                },
+                "normalizer": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="run manifest normalizer missing audio_mean"):
+        evaluate_saved_q2_valid(
+            run_dir,
+            tmp_path / "valid-report.json",
+            archive=archive,
+            token_encoder=TinyTokenEncoder(),
+        )
 
 
 def test_output_validation_requires_existing_parent_without_creating_it(tmp_path: Path) -> None:

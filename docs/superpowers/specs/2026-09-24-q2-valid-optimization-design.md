@@ -1,36 +1,35 @@
-# 问题 2：valid-only 优化实验设计
+# 问题 2：valid-only 单变量优化实验设计
 
 ## 目标
 
-量化当前问题 2 模型的随机种子波动，并在不再查看或使用附件 2 test 指标的条件下，生成可追溯的 valid 误差分析，决定是否值得进行单一超参数比较。
+在不再查看或使用附件 2 test 指标的条件下，以固定随机种子进行顺序的单变量实验，直到找到一个 clean valid macro-F1 严格超过 v4 基线的候选。为节省计算，不进行多随机种子平均。
 
 ## 固定边界
 
-- 原始分卷归档、附件 2 的 `train/valid/test` 键和附件 3 均只读。
-- 本轮模型选择只使用附件 2 `train=3395` 与 `valid=728`；附件 2 `test=727` 的后验指标冻结在 `artifacts/q2-test-evaluation-v4.json`，不参与任何训练、早停、超参数选择或集成权重。
-- 继续使用对齐版 `aligned_50.pkl`、本地冻结 `bert-base-uncased` 和既有连续局部缺失训练策略。
-- 既有 `q2-default*` 产物不可覆盖。新实验产物必须各自写入此前不存在的目录。
+- 原始分卷归档、附件 2 和附件 3 均只读；既有 `q2-default*` 产物不可覆盖。
+- 本轮模型选择只使用附件 2 `train=3395` 与 `valid=728`。运行时不会索引或验证 `test` 键；由于三个划分封装在同一 pickle，反序列化根映射是必要的输入读取，但 test 标签、预测和指标均不参与训练、早停、候选选择或报告。
+- 附件 2 test 的后验指标冻结在 `artifacts/q2-test-evaluation-v4.json`，本实验不重新运行 test。
+- 保持对齐版 `aligned_50.pkl`、本地冻结 `bert-base-uncased` 和连续局部缺失训练策略。固定 `seed=20260924`、30 epochs、batch size 64、learning rate 0.001、weight decay 0.0001、hidden size 128、4 heads、2 layers、CUDA。
+- 输出目录必须是此前不存在的新目录，运行前通过 `train-q2 --check`。
 
-## 第一阶段：种子方差和误差分析
+## 基线和误差画像
 
-运行三个完全相同的训练配置，唯一变量为随机种子：`20260924`、`20260925`、`20260926`。其中 `20260924` 对应当前 v4 基线；为保证比较接口一致，三个运行均生成：
+有效基线是 `artifacts/q2-default-v4`，其 clean valid 指标为：Accuracy `0.6112637363`、macro-F1 `0.6012527658`、MAE `0.6246957183`、Pearson `0.6179443855`。旧的 `q2-default` 与 `q2-default-v2` 存在已知掩码泄漏，不能用于本轮比较。
 
-- clean valid 的 Accuracy、macro-F1、MAE、Pearson；
-- valid 预测、3 类混淆矩阵、每类 precision/recall/F1；
-- 27 个局部缺失场景；
-- 配置、随机种子、模型与输入引用的独立清单。
+从保存的 v4 权重生成 `artifacts/q2-valid-evaluation-v4.json`，记录 728 条 valid 样本的混淆矩阵和逐类 precision、recall、F1。该产物可由 `classification_report` 复核，且不含 test 指标。
 
-汇总报告给出三种子的均值、标准差和范围。模型比较仍按 mean macro-F1 优先、mean MAE 次级；任何单种子峰值不作为晋级依据。
+## 顺序实验
 
-## 第二阶段门槛
+每次只改变一个可解释变量，所有候选与 v4 以同一固定 seed 的 clean valid 结果比较：
 
-只有在第一阶段确认波动后，才选择**一个**最小可解释变量进行比较：学习率、dropout、类别权重或缺失增强上限之一。每个候选仍跑相同三种子并只与基线 valid 汇总比较；不在同一轮混入多项架构变化。
+1. 唯一候选仅将 dropout 从 `0.1` 调整为 `0.2`，输出至 `artifacts/q2-valid-dropout-020`。
+2. 候选 macro-F1 严格大于 `0.6012527658` 后，立即停止本轮探索，不再训练第二个候选，也不使用 test 决策。
 
-若没有候选在 mean macro-F1 上超过基线均值至少 `0.01`，或改善伴随 mean MAE 明显恶化，则保留 v4 基线并报告负结果。
+MAE、Accuracy 和 Pearson 与 macro-F1 一并记录。若 macro-F1 的微小提升伴随 MAE 明显恶化，候选只可称为“分类指标突破”，不能称为两个任务均优，也不自动替代 v4 作为回归基线。
 
 ## 验证
 
-- 为 valid 报告生成器增加纯单元测试：固定标签/预测应产生正确的混淆矩阵和逐类指标。
-- 每次运行前执行 `train-q2 --check`；运行后核对输出目录、28 个验证记录（clean + 27 场景）、模型和清单。
-- 汇总脚本拒绝混入不同数据接口、不同 BERT 路径、不同训练超参数或缺少 seed 的运行。
-- 完成第一阶段后重新运行默认测试；只报告 valid 汇总，不重新运行 test。
+- `classification_report` 的纯单元测试必须检查固定标签/预测的三类混淆矩阵和每类 precision、recall、F1，并拒绝 0/1/2 之外的类别。
+- 每个成功候选写出 `metrics.json`、`valid_classification_report.json`、27 行 `validation_scenarios.csv`、30 行附件 3 推理、模型和运行清单。
+- 运行后核对候选清单与 v4 清单：除 `dropout` 和由训练产生的最佳 epoch 外，固定训练参数和输入引用必须一致。
+- 完成后重新运行默认测试；报告只给出 valid 比较与单次运行的随机性限制，不重新运行 test。

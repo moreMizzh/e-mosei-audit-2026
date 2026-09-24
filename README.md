@@ -203,9 +203,20 @@ PYTHONPATH="$PWD/src" .tools/q1-kaggle/bin/python -m e_mosei_audit.cli train-q2 
   --config q2.toml
 ```
 
+要从已保存的 Q2 权重复算三类 valid 报告而不重新训练，可使用新的输出文件路径：
+
+```bash
+PYTHONPATH="$PWD/src" .tools/q1-kaggle/bin/python -m e_mosei_audit.cli evaluate-q2-valid \
+  --run-dir artifacts/q2-default-v4 \
+  --output artifacts/q2-valid-evaluation-v4.json
+```
+
+该命令只构造附件 2 的 train/valid 接口以恢复归一化和 valid 预测；不索引或验证 test 键，不训练，也不生成附件 3 推理。
+
 输出目录必须此前不存在。成功后其下包含：
 
 - `metrics.json`：仅附件 2 valid 的 Accuracy、macro-F1、MAE、Pearson；
+- `valid_classification_report.json`：仅附件 2 valid 的三类混淆矩阵，以及 Negative、Neutral、Positive 各自的 precision、recall、F1 和样本数；
 - `validation_scenarios.csv`：text/audio/vision 各自 beginning/middle/end 与 10%/30%/50% 所选连续可用段的 27 个受控缺失场景，并记录相对该模态全部可用位置的实际覆盖率；
 - `attachment3_predictions.csv`：全部 30 条附件 3 对齐样本的极性与强度；
 - `attachment3_missingness.csv`：由全零证据得到的每模态不可用连续段摘要；

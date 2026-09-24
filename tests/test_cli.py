@@ -232,3 +232,28 @@ def test_train_q2_check_runs_only_preflight(monkeypatch, capsys, tmp_path: Path)
 
     assert status == 0
     assert '"attachment3_count": 30' in capsys.readouterr().out
+
+
+def test_evaluate_q2_valid_forwards_saved_run_and_new_output(monkeypatch, capsys, tmp_path: Path) -> None:
+    observed = {}
+
+    def fake_evaluate(run_dir, output_path):
+        observed["run_dir"] = run_dir
+        observed["output_path"] = output_path
+        return {"sample_count": 728, "metrics": {"macro_f1": 0.6}}
+
+    monkeypatch.setattr(cli, "evaluate_saved_q2_valid", fake_evaluate)
+
+    status = cli.main(
+        [
+            "evaluate-q2-valid",
+            "--run-dir",
+            str(tmp_path / "saved-run"),
+            "--output",
+            str(tmp_path / "valid-report.json"),
+        ]
+    )
+
+    assert status == 0
+    assert observed == {"run_dir": tmp_path / "saved-run", "output_path": tmp_path / "valid-report.json"}
+    assert '"sample_count": 728' in capsys.readouterr().out

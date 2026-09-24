@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 import numpy as np
 import torch
@@ -86,6 +86,48 @@ def compute_metrics(
         "macro_f1": float(np.mean(f1_values)),
         "mae": float(np.mean(np.abs(scores - predicted_score))),
         "pearson": pearson,
+    }
+
+
+def classification_report(
+    *,
+    true_classes: np.ndarray,
+    predicted_classes: np.ndarray,
+) -> dict[str, object]:
+    """Return the fixed three-class confusion matrix and per-class validation metrics."""
+
+    classes = _as_vector(true_classes, "true_classes")
+    predicted = _as_vector(predicted_classes, "predicted_classes")
+    if not len(classes) or len(predicted) != len(classes):
+        raise ValueError("classification inputs must be non-empty vectors with equal lengths")
+    if not np.isin(classes, (0, 1, 2)).all() or not np.isin(predicted, (0, 1, 2)).all():
+        raise ValueError("classes must only contain 0, 1, or 2")
+    confusion = np.zeros((3, 3), dtype=np.int64)
+    for true_class, predicted_class in zip(classes, predicted, strict=True):
+        confusion[int(true_class), int(predicted_class)] += 1
+    labels = ("Negative", "Neutral", "Positive")
+    per_class: dict[str, dict[str, int | float]] = {}
+    for label, name in enumerate(labels):
+        true_positive = int(confusion[label, label])
+        false_positive = int(confusion[:, label].sum() - true_positive)
+        false_negative = int(confusion[label, :].sum() - true_positive)
+        precision = 0.0 if true_positive + false_positive == 0 else true_positive / (true_positive + false_positive)
+        recall = 0.0 if true_positive + false_negative == 0 else true_positive / (true_positive + false_negative)
+        per_class[name] = {
+            "label": label,
+            "support": int(confusion[label, :].sum()),
+            "precision": precision,
+            "recall": recall,
+            "f1": 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall),
+        }
+    return {
+        "confusion_matrix": {
+            "rows": "true_class",
+            "columns": "predicted_class",
+            "labels": list(labels),
+            "counts": confusion.tolist(),
+        },
+        "per_class": per_class,
     }
 
 
@@ -174,6 +216,13 @@ def run_q2(
     if best_state is None or best_metrics is None:
         raise RuntimeError("no Q2 training epoch produced validation metrics")
     model.load_state_dict(best_state)
+    _, valid_classes, _ = _evaluate(
+        model, active_encoder, dataset.valid, valid_masks, normalizer, config.batch_size, device
+    )
+    valid_report = classification_report(
+        true_classes=dataset.valid.classification_labels,
+        predicted_classes=valid_classes,
+    )
     scenario_rows = _scenario_rows(model, active_encoder, dataset.valid, valid_masks, normalizer, config.batch_size, device)
     predictions = _predict_attachment3(model, active_encoder, attachment3, normalizer, device)
     _write_run_outputs(
@@ -182,6 +231,7 @@ def run_q2(
         normalizer,
         best_epoch=best_epoch,
         clean_metrics=best_metrics,
+        valid_report=valid_report,
         scenario_rows=scenario_rows,
         predictions=predictions,
         attachment3=attachment3,
@@ -216,11 +266,141 @@ def check_q2(
     }
 
 
+def evaluate_saved_q2_valid(
+    run_dir: Path,
+    output_path: Path,
+    *,
+    archive: Any | None = None,
+    token_encoder: TokenEncoder | None = None,
+) -> dict[str, object]:
+    """Evaluate one saved Q2 checkpoint on Attachment 2 valid only."""
+
+    resolved_run_dir = run_dir.resolve()
+    manifest_path = resolved_run_dir / "run_manifest.json"
+    model_path = resolved_run_dir / "model.pt"
+    if not manifest_path.is_file() or not model_path.is_file():
+        raise ValueError("run_dir must contain run_manifest.json and model.pt")
+    _validate_report_target(output_path)
+    with manifest_path.open(encoding="utf-8") as stream:
+        manifest = json.load(stream)
+    if not isinstance(manifest, Mapping):
+        raise ValueError("run manifest must be a mapping")
+    training = _manifest_mapping(manifest, "training")
+    normalizer_values = _manifest_mapping(manifest, "normalizer")
+    device = _resolve_device(_manifest_string(training, "device"))
+    active_archive = archive or SevenZipArchive(
+        Path(_manifest_string(manifest, "archive")),
+        Path(_manifest_string(manifest, "seven_zip")),
+    )
+    active_archive.verify()
+    dataset = load_aligned_train_valid(active_archive)
+    encoder = token_encoder or FrozenBertEncoder.from_local(
+        Path(_manifest_string(manifest, "bert_model")), device=device
+    )
+    normalizer = FeatureNormalizer(
+        audio_mean=_manifest_normalizer_array(normalizer_values, "audio_mean", 74),
+        audio_std=_manifest_normalizer_array(normalizer_values, "audio_std", 74),
+        vision_mean=_manifest_normalizer_array(normalizer_values, "vision_mean", 35),
+        vision_std=_manifest_normalizer_array(normalizer_values, "vision_std", 35),
+    )
+    model = MaskAwareTemporalFusion(
+        hidden_size=_manifest_positive_int(training, "hidden_size"),
+        heads=_manifest_positive_int(training, "heads"),
+        layers=_manifest_positive_int(training, "layers"),
+        dropout=_manifest_dropout(training, "dropout"),
+    ).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    valid_masks = observed_masks(dataset.valid.text_bert, dataset.valid.audio, dataset.valid.vision)
+    metrics, predicted_classes, predicted_scores = _evaluate(
+        model,
+        encoder,
+        dataset.valid,
+        valid_masks,
+        normalizer,
+        _manifest_positive_int(training, "batch_size"),
+        device,
+    )
+    report = {
+        "scope": "Attachment 2 valid only; Attachment 2 test was not validated, evaluated, or used.",
+        "source_run": str(resolved_run_dir),
+        "sample_count": dataset.valid.sample_count,
+        "metrics": metrics,
+        **classification_report(
+            true_classes=dataset.valid.classification_labels,
+            predicted_classes=predicted_classes,
+        ),
+        "prediction_score_summary": {
+            "mean": float(predicted_scores.mean()),
+            "std": float(predicted_scores.std()),
+            "min": float(predicted_scores.min()),
+            "max": float(predicted_scores.max()),
+        },
+    }
+    _write_json_new(output_path, report)
+    return report
+
+
 def _validate_output_target(output_dir: Path) -> None:
     if output_dir.exists() or output_dir.is_symlink():
         raise FileExistsError(f"Q2 output directory already exists: {output_dir}")
     if not output_dir.parent.is_dir():
         raise ValueError(f"Q2 output directory parent must be an existing directory: {output_dir.parent}")
+
+
+def _validate_report_target(output_path: Path) -> None:
+    if output_path.exists() or output_path.is_symlink():
+        raise FileExistsError(f"Q2 valid report already exists: {output_path}")
+    if not output_path.parent.is_dir():
+        raise ValueError(f"Q2 valid report parent must be an existing directory: {output_path.parent}")
+
+
+def _manifest_mapping(manifest: Mapping[str, object], field: str) -> Mapping[str, object]:
+    value = _manifest_value(manifest, field)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"run manifest {field} must be a mapping")
+    return value
+
+
+def _manifest_string(manifest: Mapping[str, object], field: str) -> str:
+    value = _manifest_value(manifest, field)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"run manifest {field} must be a non-empty string")
+    return value
+
+
+def _manifest_value(manifest: Mapping[str, object], field: str) -> object:
+    if field not in manifest:
+        raise ValueError(f"run manifest {field} is missing")
+    return manifest[field]
+
+
+def _manifest_positive_int(manifest: Mapping[str, object], field: str) -> int:
+    value = _manifest_value(manifest, field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"run manifest {field} must be a positive integer")
+    return value
+
+
+def _manifest_dropout(manifest: Mapping[str, object], field: str) -> float:
+    value = _manifest_value(manifest, field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
+        raise ValueError(f"run manifest {field} must be finite")
+    if not 0 <= value < 1:
+        raise ValueError(f"run manifest {field} must be in [0, 1)")
+    return float(value)
+
+
+def _manifest_normalizer_array(manifest: Mapping[str, object], field: str, width: int) -> np.ndarray:
+    if field not in manifest:
+        raise ValueError(f"run manifest normalizer missing {field}")
+    value = manifest[field]
+    try:
+        array = np.asarray(value, dtype=np.float32)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f"run manifest normalizer {field} must be numeric") from error
+    if array.shape != (width,) or not np.isfinite(array).all():
+        raise ValueError(f"run manifest normalizer {field} must be a finite vector of length {width}")
+    return array
 
 
 def _resolve_device(value: str) -> torch.device:
@@ -443,6 +623,7 @@ def _write_run_outputs(
     *,
     best_epoch: int,
     clean_metrics: dict[str, float | None],
+    valid_report: dict[str, object],
     scenario_rows: list[dict[str, object]],
     predictions: list[Prediction],
     attachment3: list[Attachment3Sample],
@@ -453,6 +634,7 @@ def _write_run_outputs(
         _write_csv(staging / "validation_scenarios.csv", scenario_rows)
         _write_csv(staging / "attachment3_missingness.csv", _missingness_rows(attachment3))
         _write_json(staging / "metrics.json", {"clean": clean_metrics})
+        _write_json(staging / "valid_classification_report.json", valid_report)
         _write_json(
             staging / "run_manifest.json",
             {
@@ -557,6 +739,12 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
 
 def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_json_new(path: Path, value: object) -> None:
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
+        stream.write("\n")
 
 
 def _render_audit_report(
