@@ -913,10 +913,12 @@ def test_evaluate_saved_q2_valid_strictly_reconstructs_shared_late_expert_checkp
         ),
         encoding="utf-8",
     )
+    observed_strict: list[bool] = []
     original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
 
     def recording_load_state_dict(self, *args, **kwargs):
         assert kwargs["strict"] is True
+        observed_strict.append(kwargs["strict"])
         return original_load_state_dict(self, *args, **kwargs)
 
     monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
@@ -931,6 +933,7 @@ def test_evaluate_saved_q2_valid_strictly_reconstructs_shared_late_expert_checkp
     assert report["sample_count"] == 3
     assert sum(sum(row) for row in report["confusion_matrix"]["counts"]) == 3
     assert archive.verify_count == 1
+    assert observed_strict == [True]
 
 
 def test_evaluate_saved_q2_valid_rejects_unsupported_manifest_fusion_variant(tmp_path: Path) -> None:
