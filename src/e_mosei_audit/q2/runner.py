@@ -739,40 +739,40 @@ def _write_run_outputs(
         _write_csv(staging / "attachment3_missingness.csv", _missingness_rows(attachment3))
         _write_json(staging / "metrics.json", {"clean": clean_metrics})
         _write_json(staging / "valid_classification_report.json", valid_report)
-        _write_json(
-            staging / "run_manifest.json",
-            {
-                "archive": str(config.archive),
-                "seven_zip": str(config.seven_zip),
-                "bert_model": str(config.bert_model),
-                "seed": config.seed,
-                "best_epoch": best_epoch,
-                "training": {
-                    "epochs": config.epochs,
-                    "batch_size": config.batch_size,
-                    "learning_rate": config.learning_rate,
-                    "weight_decay": config.weight_decay,
-                    "hidden_size": config.hidden_size,
-                    "heads": config.heads,
-                    "layers": config.layers,
-                    "dropout": config.dropout,
-                    "regression_loss_weight": config.regression_loss_weight,
-                    "polarity_consistency_loss_weight": config.polarity_consistency_loss_weight,
-                    "class_weight_exponent": config.class_weight_exponent,
-                    "fusion_variant": config.fusion_variant,
-                    "text_adapter_variant": config.text_adapter_variant,
-                    "classification_variant": config.classification_variant,
-                    "device": config.device,
-                    "synthetic_missingness": {
-                        "enabled": config.synthetic_missingness_enabled,
-                        "modalities_per_sample": "1 or 2",
-                        "fraction_range": [0.1, 0.5],
-                    },
+        manifest = {
+            "archive": str(config.archive),
+            "seven_zip": str(config.seven_zip),
+            "bert_model": str(config.bert_model),
+            "seed": config.seed,
+            "best_epoch": best_epoch,
+            "training": {
+                "epochs": config.epochs,
+                "batch_size": config.batch_size,
+                "learning_rate": config.learning_rate,
+                "weight_decay": config.weight_decay,
+                "hidden_size": config.hidden_size,
+                "heads": config.heads,
+                "layers": config.layers,
+                "dropout": config.dropout,
+                "regression_loss_weight": config.regression_loss_weight,
+                "polarity_consistency_loss_weight": config.polarity_consistency_loss_weight,
+                "class_weight_exponent": config.class_weight_exponent,
+                "fusion_variant": config.fusion_variant,
+                "text_adapter_variant": config.text_adapter_variant,
+                "classification_variant": config.classification_variant,
+                "device": config.device,
+                "synthetic_missingness": {
+                    "enabled": config.synthetic_missingness_enabled,
+                    "modalities_per_sample": "1 or 2",
+                    "fraction_range": [0.1, 0.5],
                 },
-                "normalizer": normalizer.as_dict(),
-                "attachment3_count": len(predictions),
             },
-        )
+            "normalizer": normalizer.as_dict(),
+            "attachment3_count": len(predictions),
+        }
+        if config.fusion_variant == "pooled_lmf_r4":
+            manifest["architecture"] = {"pooled_lmf_rank": 4}
+        _write_json(staging / "run_manifest.json", manifest)
         torch.save(model.state_dict(), staging / "model.pt")
         (staging / "audit_report.md").write_text(
             _render_audit_report(best_epoch, clean_metrics, scenario_rows), encoding="utf-8"
