@@ -19,7 +19,7 @@
 - Modify: `tests/test_cli.py`
 - Modify: `tests/test_q2_runner.py`
 
-- [ ] **Step 1: Write failing configuration and fixture tests**
+- [x] **Step 1: Write failing configuration and fixture tests**
 
 Add `text_encoder_variant = "last_hidden_state"` to every valid inline Q2 TOML and direct `Q2Config` fixture. Add a parameterized parser test accepting exactly `last_hidden_state` and `last4_scalar_mix`; add missing-field coverage requiring:
 
@@ -31,7 +31,7 @@ Add invalid-string and non-string tests requiring:
 
 Update shared CLI and runner `Q2Config` construction to name `last_hidden_state` explicitly.
 
-- [ ] **Step 2: Verify the focused consumers are red**
+- [x] **Step 2: Verify the focused consumers are red**
 
 Run:
 
@@ -39,7 +39,7 @@ Run:
 
 Expected: fresh valid TOMLs reject the unexpected field and direct configs fail because the dataclass does not accept it.
 
-- [ ] **Step 3: Implement the strict configuration contract**
+- [x] **Step 3: Implement the strict configuration contract**
 
 In `config.py`, add:
 
@@ -54,11 +54,11 @@ def validate_text_encoder_variant(value: object) -> str:
 
 Insert `text_encoder_variant` after `temporal_pooling_variant` in `_TRAINING_FIELDS`, add the frozen `Q2Config.text_encoder_variant: str`, validate/store it in `load_q2_config`, and add `text_encoder_variant = "last_hidden_state"` to the example TOML. Do not default a missing fresh configuration field.
 
-- [ ] **Step 4: Verify focused configuration consumers are green**
+- [x] **Step 4: Verify focused configuration consumers are green**
 
 Run the Step 2 command. Expected: all focused configuration, CLI, and runner fixture users pass.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
     git add src/e_mosei_audit/q2/config.py docs/q2-config.example.toml tests/test_q2_config.py tests/test_cli.py tests/test_q2_runner.py
     git commit -m "feat: configure Q2 text encoder variant"
