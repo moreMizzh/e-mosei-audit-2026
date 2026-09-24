@@ -21,6 +21,7 @@ from torch import nn
 from e_mosei_audit.archive import SevenZipArchive
 from e_mosei_audit.q2.config import (
     Q2Config,
+    validate_classification_loss_training,
     validate_classification_loss_variant,
     validate_classification_variant,
     validate_dropout_consistency_variant,
@@ -187,6 +188,11 @@ def run_q2(
         config.dropout_consistency_variant,
         classification_variant=config.classification_variant,
         dropout=config.dropout,
+    )
+    validate_classification_loss_training(
+        config.classification_loss_variant,
+        classification_variant=config.classification_variant,
+        dropout_consistency_variant=config.dropout_consistency_variant,
     )
     _validate_output_target(config.output_dir)
     active_archive = archive or SevenZipArchive(config.archive, config.seven_zip)
