@@ -138,6 +138,27 @@ def test_text_anchor_residual_fusion_constructs_and_returns_valid_predictions() 
     assert torch.isin(output.logits.argmax(dim=1), torch.tensor([0, 1, 2])).all()
 
 
+def test_pairwise_hadamard_residual_fusion_constructs_and_returns_valid_predictions() -> None:
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="pairwise_hadamard_residual",
+    )
+    text = torch.randn(2, 50, 768)
+    audio = torch.randn(2, 50, 74)
+    vision = torch.randn(2, 50, 35)
+    masks = example_masks()
+
+    output = model(text=text, audio=audio, vision=vision, masks=masks)
+
+    assert output.logits.shape == (2, 3)
+    assert torch.isfinite(output.logits).all()
+    assert torch.isfinite(output.score).all()
+    assert torch.isin(output.logits.argmax(dim=1), torch.tensor([0, 1, 2])).all()
+
+
 def test_text_anchor_residual_ignores_all_unavailable_raw_modality_values() -> None:
     torch.manual_seed(63)
     model = MaskAwareTemporalFusion(
@@ -844,7 +865,7 @@ def test_mask_aware_fusion_rejects_unsupported_fusion_variant() -> None:
         ValueError,
         match=(
             r"\Afusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared, "
-            r"text_anchor_residual\Z"
+            r"text_anchor_residual, pairwise_hadamard_residual\Z"
         ),
     ):
         MaskAwareTemporalFusion(fusion_variant="unsupported")

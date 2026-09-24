@@ -62,7 +62,8 @@ device = "cpu"
 
 
 @pytest.mark.parametrize(
-    "variant", ["gated", "mag_lite", "mult_lite", "late_expert_shared", "text_anchor_residual"]
+    "variant",
+    ["gated", "mag_lite", "mult_lite", "late_expert_shared", "text_anchor_residual", "pairwise_hadamard_residual"],
 )
 def test_load_q2_config_parses_supported_fusion_variant(tmp_path: Path, variant: str) -> None:
     archive = tmp_path / "data.zip"
@@ -318,7 +319,7 @@ device = "cpu"
         ValueError,
         match=(
             r"\Afusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared, "
-            r"text_anchor_residual\Z"
+            r"text_anchor_residual, pairwise_hadamard_residual\Z"
         ),
     ):
         load_q2_config(config_path)
