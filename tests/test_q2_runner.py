@@ -1309,7 +1309,7 @@ def test_evaluate_saved_q2_valid_rejects_unsupported_manifest_fusion_variant(tmp
         ValueError,
         match=(
             r"\Afusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared, "
-            r"text_anchor_residual\Z"
+            r"text_anchor_residual, pairwise_hadamard_residual\Z"
         ),
     ):
         evaluate_saved_q2_valid(
