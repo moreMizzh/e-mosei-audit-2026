@@ -54,6 +54,32 @@ def flat_output(logits: torch.Tensor, score: torch.Tensor) -> Q2Output:
     )
 
 
+def test_classification_loss_uses_weighted_label_smoothing_and_backpropagates() -> None:
+    logits = torch.tensor([[1.2, -0.3, 0.4], [-0.8, 0.9, 0.1]], requires_grad=True)
+    labels = torch.tensor([0, 2])
+    class_weights = torch.tensor([0.2, 3.0, 1.7])
+    output = flat_output(logits, torch.zeros(2))
+
+    actual = q2_runner._classification_loss(
+        output,
+        labels,
+        class_weights,
+        classification_loss_variant="weighted_label_smoothing_005",
+    )
+    expected = torch.nn.functional.cross_entropy(
+        logits,
+        labels,
+        weight=class_weights,
+        label_smoothing=0.05,
+    )
+
+    assert torch.equal(actual, expected)
+    actual.backward()
+    assert logits.grad is not None
+    assert torch.isfinite(logits.grad).all()
+    assert torch.count_nonzero(logits.grad) > 0
+
+
 def test_joint_loss_applies_configured_regression_weight() -> None:
     output = Q2Output(
         logits=torch.tensor([[1.0, 0.0, -1.0], [0.0, 1.0, -1.0]]),
@@ -72,6 +98,7 @@ def test_joint_loss_applies_configured_regression_weight() -> None:
         labels,
         scores,
         class_weights,
+        classification_loss_variant="hard_ce",
         regression_loss_weight=0.25,
         polarity_consistency_loss_weight=0.0,
     )
@@ -100,6 +127,7 @@ def test_joint_loss_applies_configured_polarity_consistency_weight() -> None:
         labels,
         scores,
         class_weights,
+        classification_loss_variant="hard_ce",
         regression_loss_weight=0.25,
         polarity_consistency_loss_weight=0.10,
     )
@@ -125,6 +153,7 @@ def test_joint_loss_polarity_consistency_term_backpropagates_to_both_heads(monke
         torch.tensor([0, 1]),
         torch.tensor([0.0, 0.0]),
         torch.ones(3),
+        classification_loss_variant="hard_ce",
         regression_loss_weight=0.0,
         polarity_consistency_loss_weight=1.0,
     )
@@ -167,6 +196,7 @@ def test_joint_loss_uses_weighted_conditional_bce_for_corn() -> None:
         labels,
         scores,
         class_weights,
+        classification_loss_variant="hard_ce",
         regression_loss_weight=0.0,
         polarity_consistency_loss_weight=0.0,
     )
@@ -189,6 +219,7 @@ def test_joint_loss_corn_all_negative_batch_uses_only_first_condition() -> None:
         torch.zeros(2, dtype=torch.int64),
         torch.zeros(2),
         torch.tensor([3.0, 2.0, 1.0]),
+        classification_loss_variant="hard_ce",
         regression_loss_weight=0.0,
         polarity_consistency_loss_weight=0.0,
     )
@@ -215,6 +246,7 @@ def test_rdrop_joint_loss_matches_two_weighted_joint_losses_and_symmetric_kl() -
             labels,
             scores,
             class_weights,
+            classification_loss_variant="hard_ce",
             regression_loss_weight=0.25,
             polarity_consistency_loss_weight=0.10,
         )
@@ -223,6 +255,7 @@ def test_rdrop_joint_loss_matches_two_weighted_joint_losses_and_symmetric_kl() -
             labels,
             scores,
             class_weights,
+            classification_loss_variant="hard_ce",
             regression_loss_weight=0.25,
             polarity_consistency_loss_weight=0.10,
         )
@@ -246,6 +279,7 @@ def test_rdrop_joint_loss_matches_two_weighted_joint_losses_and_symmetric_kl() -
         labels,
         scores,
         class_weights,
+        classification_loss_variant="hard_ce",
         regression_loss_weight=0.25,
         polarity_consistency_loss_weight=0.10,
     )
@@ -291,6 +325,7 @@ def test_train_epoch_none_uses_one_forward_and_joint_loss(monkeypatch) -> None:
         object(),
         batch_size=1,
         class_weights=torch.ones(3),
+        classification_loss_variant="hard_ce",
         regression_loss_weight=0.5,
         polarity_consistency_loss_weight=0.0,
         dropout_consistency_variant="none",
@@ -340,6 +375,7 @@ def test_train_epoch_rdrop_uses_two_forwards_with_one_mask_and_step(monkeypatch)
         object(),
         batch_size=1,
         class_weights=torch.ones(3),
+        classification_loss_variant="hard_ce",
         regression_loss_weight=0.5,
         polarity_consistency_loss_weight=0.0,
         dropout_consistency_variant="rdrop_alpha_1",
@@ -391,6 +427,7 @@ def test_train_epoch_rdrop_rejects_ordinal_outputs_before_optimizer_mutation(mon
             object(),
             batch_size=1,
             class_weights=torch.ones(3),
+            classification_loss_variant="hard_ce",
             regression_loss_weight=0.5,
             polarity_consistency_loss_weight=0.0,
             dropout_consistency_variant="rdrop_alpha_1",
@@ -679,6 +716,27 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     assert archive.verify_count == 1
     assert "缺失影响汇总" in report
     assert "最不利 macro-F1 场景" in report
+
+
+def test_run_q2_records_weighted_label_smoothing_without_accessing_test(tmp_path: Path) -> None:
+    config = replace(
+        runner_config(tmp_path),
+        classification_loss_variant="weighted_label_smoothing_005",
+    )
+
+    summary = run_q2(
+        config,
+        archive=runner_archive_with_inaccessible_test(),
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    with (config.output_dir / "attachment3_predictions.csv").open(encoding="utf-8", newline="") as stream:
+        predictions = list(csv.DictReader(stream))
+
+    assert summary["attachment3_count"] == 30
+    assert len(predictions) == 30
+    assert manifest["training"]["classification_loss_variant"] == "weighted_label_smoothing_005"
 
 
 def test_rdrop_run_manifest_reconstructs_valid_without_test_or_attachment3(

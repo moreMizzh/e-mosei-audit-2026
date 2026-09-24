@@ -21,6 +21,7 @@ from torch import nn
 from e_mosei_audit.archive import SevenZipArchive
 from e_mosei_audit.q2.config import (
     Q2Config,
+    validate_classification_loss_variant,
     validate_classification_variant,
     validate_dropout_consistency_variant,
     validate_dropout_consistency_training,
@@ -239,6 +240,7 @@ def run_q2(
             normalizer,
             batch_size=config.batch_size,
             class_weights=weights,
+            classification_loss_variant=config.classification_loss_variant,
             regression_loss_weight=config.regression_loss_weight,
             polarity_consistency_loss_weight=config.polarity_consistency_loss_weight,
             dropout_consistency_variant=config.dropout_consistency_variant,
@@ -620,6 +622,7 @@ def _train_epoch(
     *,
     batch_size: int,
     class_weights: torch.Tensor,
+    classification_loss_variant: str,
     regression_loss_weight: float,
     polarity_consistency_loss_weight: float,
     dropout_consistency_variant: str,
@@ -644,6 +647,7 @@ def _train_epoch(
                 labels,
                 scores,
                 class_weights,
+                classification_loss_variant=classification_loss_variant,
                 regression_loss_weight=regression_loss_weight,
                 polarity_consistency_loss_weight=polarity_consistency_loss_weight,
             )
@@ -655,6 +659,7 @@ def _train_epoch(
                 labels,
                 scores,
                 class_weights,
+                classification_loss_variant=classification_loss_variant,
                 regression_loss_weight=regression_loss_weight,
                 polarity_consistency_loss_weight=polarity_consistency_loss_weight,
             )
@@ -669,10 +674,16 @@ def _joint_loss(
     scores: torch.Tensor,
     class_weights: torch.Tensor,
     *,
+    classification_loss_variant: str,
     regression_loss_weight: float,
     polarity_consistency_loss_weight: float,
 ) -> torch.Tensor:
-    classification = _classification_loss(output, labels, class_weights)
+    classification = _classification_loss(
+        output,
+        labels,
+        class_weights,
+        classification_loss_variant=classification_loss_variant,
+    )
     regression = nn.functional.smooth_l1_loss(output.score, scores)
     probabilities = torch.softmax(output.logits, dim=1)
     expected_polarity = probabilities @ output.logits.new_tensor([-1.0, 0.0, 1.0])
@@ -687,6 +698,7 @@ def _rdrop_joint_loss(
     scores: torch.Tensor,
     class_weights: torch.Tensor,
     *,
+    classification_loss_variant: str,
     regression_loss_weight: float,
     polarity_consistency_loss_weight: float,
 ) -> torch.Tensor:
@@ -700,6 +712,7 @@ def _rdrop_joint_loss(
             labels,
             scores,
             class_weights,
+            classification_loss_variant=classification_loss_variant,
             regression_loss_weight=regression_loss_weight,
             polarity_consistency_loss_weight=polarity_consistency_loss_weight,
         )
@@ -708,6 +721,7 @@ def _rdrop_joint_loss(
             labels,
             scores,
             class_weights,
+            classification_loss_variant=classification_loss_variant,
             regression_loss_weight=regression_loss_weight,
             polarity_consistency_loss_weight=polarity_consistency_loss_weight,
         )
@@ -724,11 +738,22 @@ def _rdrop_joint_loss(
     return joint + 0.25 * divergence
 
 
-def _classification_loss(output: Q2Output, labels: torch.Tensor, class_weights: torch.Tensor) -> torch.Tensor:
+def _classification_loss(
+    output: Q2Output,
+    labels: torch.Tensor,
+    class_weights: torch.Tensor,
+    *,
+    classification_loss_variant: str,
+) -> torch.Tensor:
     """Use flat cross-entropy or CORN's two conditional binary objectives."""
 
+    classification_loss_variant = validate_classification_loss_variant(classification_loss_variant)
     if output.ordinal_logits is None:
-        return nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
+        if classification_loss_variant == "hard_ce":
+            return nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
+        return nn.functional.cross_entropy(output.logits, labels, weight=class_weights, label_smoothing=0.05)
+    if classification_loss_variant != "hard_ce":
+        raise ValueError("weighted_label_smoothing_005 requires flat classification outputs")
     ordinal_logits = output.ordinal_logits
     sample_weights = class_weights[labels]
     first_terms = nn.functional.binary_cross_entropy_with_logits(
@@ -959,6 +984,7 @@ def _write_run_outputs(
                 "fusion_variant": config.fusion_variant,
                 "text_adapter_variant": config.text_adapter_variant,
                 "classification_variant": config.classification_variant,
+                "classification_loss_variant": config.classification_loss_variant,
                 "temporal_position_variant": config.temporal_position_variant,
                 "temporal_pooling_variant": config.temporal_pooling_variant,
                 "text_encoder_variant": text_encoder_variant,
