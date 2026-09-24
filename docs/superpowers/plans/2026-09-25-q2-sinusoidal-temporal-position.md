@@ -65,13 +65,13 @@ Expected: all config tests pass.
 - Modify: src/e_mosei_audit/q2/model.py:12-16,86-105,220-231
 - Modify: tests/test_q2_model.py:1-200,1280-1322
 
-- [ ] **Step 1: Write failing model tests**
+- [x] **Step 1: Write failing model tests**
 
 Import a desired _sinusoidal_position_encoding helper and assert its t=0 values are [0, 1, 0, 1, 0] for hidden width 5. Assert values at t=1 and t=2 follow the fixed 10000 base and the final odd dimension uses sine. Use an encoder recorder to assert none sends the pre-existing fused tensor, while sinusoidal differs only where temporal is true and padded slots remain zero.
 
 Add model-pair tests that none and sinusoidal have exactly equal parameter counts and state-dict keys, constructing either leaves successor RNG values identical, unavailable raw values do not affect predictions, and appending fully masked padding does not affect predictions.
 
-- [ ] **Step 2: Run the model tests to prove red**
+- [x] **Step 2: Run the model tests to prove red**
 
 Run:
 
@@ -79,7 +79,7 @@ Run:
 
 Expected: import, constructor, or asserted encoder-input failure because the position feature does not exist.
 
-- [ ] **Step 3: Implement only the fixed position path**
+- [x] **Step 3: Implement only the fixed position path**
 
 Import validate_temporal_position_variant, accept temporal_position_variant: str = "none" in MaskAwareTemporalFusion.__init__, and store its validated value. Add a helper with torch.arange, even-index sine, odd-index cosine, no nn.Parameter, no buffer, and no random draw.
 
@@ -94,7 +94,7 @@ Immediately before the existing shared encoder call, apply:
 
 Do not alter late-expert behavior, fusion variants, optimizer, loss, checkpoint selection, or masks.
 
-- [ ] **Step 4: Verify model tests pass**
+- [x] **Step 4: Verify model tests pass**
 
 Run:
 
@@ -102,7 +102,7 @@ Run:
 
 Expected: all model tests pass, including position, RNG, unavailable-value, and padding invariants.
 
-- [ ] **Step 5: Commit the model behavior**
+- [x] **Step 5: Commit the model behavior**
 
     git add src/e_mosei_audit/q2/model.py tests/test_q2_model.py
     git commit -m "feat: add Q2 sinusoidal temporal positions"
