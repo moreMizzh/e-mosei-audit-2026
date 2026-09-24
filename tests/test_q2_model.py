@@ -321,8 +321,7 @@ def test_pooled_lmf_r4_is_exactly_gated_and_has_zero_factor_gradients_without_al
     audio = torch.randn(2, 4, 74)
     vision = torch.randn(2, 4, 35)
 
-    with torch.no_grad():
-        gated_output = gated(text=text, audio=audio, vision=vision, masks=masks)
+    gated_output = gated(text=text, audio=audio, vision=vision, masks=masks)
     pooled_output = pooled_lmf(text=text, audio=audio, vision=vision, masks=masks)
 
     assert_same_public_output(pooled_output, gated_output)
@@ -349,8 +348,7 @@ def test_pooled_lmf_r4_keeps_incomplete_rows_gated_in_a_mixed_batch() -> None:
     audio = torch.randn(3, 4, 74)
     vision = torch.randn(3, 4, 35)
 
-    with torch.no_grad():
-        gated_output = gated(text=text, audio=audio, vision=vision, masks=masks)
+    gated_output = gated(text=text, audio=audio, vision=vision, masks=masks)
     pooled_output = pooled_lmf(text=text, audio=audio, vision=vision, masks=masks)
 
     assert torch.equal(pooled_output.logits[1:], gated_output.logits[1:])
@@ -477,7 +475,15 @@ def test_pooled_lmf_r4_ignores_appended_temporal_padding() -> None:
             masks=padded_masks,
         )
 
-    assert_same_public_output(padded, baseline)
+    positions = temporal.shape[1]
+    assert torch.equal(padded.logits, baseline.logits)
+    assert torch.equal(padded.score, baseline.score)
+    assert torch.equal(padded.gates[:, :positions], baseline.gates)
+    assert torch.equal(padded.temporal_attention[:, :positions], baseline.temporal_attention)
+    assert torch.equal(padded.gates[:, positions:], torch.zeros_like(padded.gates[:, positions:]))
+    assert torch.equal(
+        padded.temporal_attention[:, positions:], torch.zeros_like(padded.temporal_attention[:, positions:])
+    )
 
 
 def test_pairwise_hadamard_residual_changes_predictions_with_all_modalities() -> None:
