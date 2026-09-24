@@ -22,6 +22,7 @@ FUSION_VARIANTS = (
 )
 TEXT_ADAPTER_VARIANTS = ("identity", "houlsby_output_b32")
 CLASSIFICATION_VARIANTS = ("flat", "corn")
+CLASSIFICATION_LOSS_VARIANTS = ("hard_ce", "weighted_label_smoothing_005")
 DROPOUT_CONSISTENCY_VARIANTS = ("none", "rdrop_alpha_1")
 TEMPORAL_POSITION_VARIANTS = ("none", "sinusoidal")
 TEMPORAL_POOLING_VARIANTS = ("attention", "attention_availability")
@@ -44,6 +45,7 @@ _TRAINING_FIELDS = (
     "fusion_variant",
     "text_adapter_variant",
     "classification_variant",
+    "classification_loss_variant",
     "temporal_position_variant",
     "temporal_pooling_variant",
     "text_encoder_variant",
@@ -74,6 +76,7 @@ class Q2Config:
     fusion_variant: str
     text_adapter_variant: str
     classification_variant: str
+    classification_loss_variant: str
     temporal_position_variant: str
     temporal_pooling_variant: str
     text_encoder_variant: str
@@ -122,6 +125,7 @@ def load_q2_config(path: Path) -> Q2Config:
         fusion_variant=validate_fusion_variant(values["fusion_variant"]),
         text_adapter_variant=validate_text_adapter_variant(values["text_adapter_variant"]),
         classification_variant=validate_classification_variant(values["classification_variant"]),
+        classification_loss_variant=validate_classification_loss_variant(values["classification_loss_variant"]),
         temporal_position_variant=validate_temporal_position_variant(values["temporal_position_variant"]),
         temporal_pooling_variant=validate_temporal_pooling_variant(values["temporal_pooling_variant"]),
         text_encoder_variant=validate_text_encoder_variant(values["text_encoder_variant"]),
@@ -210,10 +214,15 @@ def _validate_training(values: Mapping[str, object]) -> None:
     validate_fusion_variant(values["fusion_variant"])
     validate_text_adapter_variant(values["text_adapter_variant"])
     classification_variant = validate_classification_variant(values["classification_variant"])
-    validate_dropout_consistency_training(
+    dropout_consistency_variant = validate_dropout_consistency_training(
         values["dropout_consistency_variant"],
         classification_variant=classification_variant,
         dropout=float(values["dropout"]),
+    )
+    validate_classification_loss_training(
+        values["classification_loss_variant"],
+        classification_variant=classification_variant,
+        dropout_consistency_variant=dropout_consistency_variant,
     )
     validate_temporal_position_variant(values["temporal_position_variant"])
     validate_temporal_pooling_variant(values["temporal_pooling_variant"])
@@ -249,6 +258,32 @@ def validate_classification_variant(value: object) -> str:
     if not isinstance(value, str) or value not in CLASSIFICATION_VARIANTS:
         raise ValueError("classification_variant must be one of: flat, corn")
     return value
+
+
+def validate_classification_loss_variant(value: object) -> str:
+    """Require one of the persisted Q2 classification loss variants."""
+
+    if not isinstance(value, str) or value not in CLASSIFICATION_LOSS_VARIANTS:
+        raise ValueError("classification_loss_variant must be one of: hard_ce, weighted_label_smoothing_005")
+    return value
+
+
+def validate_classification_loss_training(
+    value: object,
+    *,
+    classification_variant: str,
+    dropout_consistency_variant: str,
+) -> str:
+    """Validate the fixed classification loss against its training prerequisites."""
+
+    variant = validate_classification_loss_variant(value)
+    if variant == "hard_ce":
+        return variant
+    if classification_variant != "flat":
+        raise ValueError("weighted_label_smoothing_005 requires classification_variant=flat")
+    if dropout_consistency_variant == "rdrop_alpha_1":
+        raise ValueError("weighted_label_smoothing_005 cannot be combined with rdrop_alpha_1")
+    return variant
 
 
 def validate_dropout_consistency_variant(value: object) -> str:

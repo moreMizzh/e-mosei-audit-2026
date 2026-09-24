@@ -41,6 +41,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -103,6 +104,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -150,6 +152,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 device = "cpu"
 ''',
@@ -196,6 +199,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 device = "cpu"
@@ -242,6 +246,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -302,6 +307,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "{variant}"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -348,6 +354,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "{variant}"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -394,6 +401,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "{variant}"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -403,6 +411,203 @@ device = "cpu"
     )
 
     assert load_q2_config(config_path).classification_variant == variant
+
+
+@pytest.mark.parametrize("variant", ["hard_ce", "weighted_label_smoothing_005"])
+def test_load_q2_config_parses_supported_classification_loss_variant(tmp_path: Path, variant: str) -> None:
+    archive = tmp_path / "data.zip"
+    archive.write_bytes(b"zip")
+    seven_zip = tmp_path / "7za"
+    seven_zip.write_bytes(b"tool")
+    seven_zip.chmod(0o755)
+    bert_model = tmp_path / "bert-base-uncased"
+    bert_model.mkdir()
+    config_path = tmp_path / "q2.toml"
+    config_path.write_text(
+        f'''[paths]
+archive = "data.zip"
+seven_zip = "7za"
+bert_model = "bert-base-uncased"
+output_dir = "artifacts/q2"
+
+[training]
+seed = 7
+epochs = 3
+batch_size = 2
+learning_rate = 0.001
+weight_decay = 0.01
+hidden_size = 16
+heads = 4
+layers = 1
+dropout = 0.0
+regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
+dropout_consistency_variant = "none"
+class_weight_exponent = 1.0
+synthetic_missingness_enabled = true
+fusion_variant = "gated"
+text_adapter_variant = "identity"
+classification_variant = "flat"
+classification_loss_variant = "{variant}"
+temporal_position_variant = "none"
+temporal_pooling_variant = "attention"
+text_encoder_variant = "last_hidden_state"
+device = "cpu"
+''',
+        encoding="utf-8",
+    )
+
+    assert load_q2_config(config_path).classification_loss_variant == variant
+
+
+def test_load_q2_config_rejects_unsupported_classification_loss_variant(tmp_path: Path) -> None:
+    archive = tmp_path / "data.zip"
+    archive.write_bytes(b"zip")
+    seven_zip = tmp_path / "7za"
+    seven_zip.write_bytes(b"tool")
+    seven_zip.chmod(0o755)
+    bert_model = tmp_path / "bert-base-uncased"
+    bert_model.mkdir()
+    config_path = tmp_path / "q2.toml"
+    config_path.write_text(
+        '''[paths]
+archive = "data.zip"
+seven_zip = "7za"
+bert_model = "bert-base-uncased"
+output_dir = "artifacts/q2"
+
+[training]
+seed = 7
+epochs = 3
+batch_size = 2
+learning_rate = 0.001
+weight_decay = 0.01
+hidden_size = 16
+heads = 4
+layers = 1
+dropout = 0.0
+regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
+dropout_consistency_variant = "none"
+class_weight_exponent = 1.0
+synthetic_missingness_enabled = true
+fusion_variant = "gated"
+text_adapter_variant = "identity"
+classification_variant = "flat"
+classification_loss_variant = "unsupported"
+temporal_position_variant = "none"
+temporal_pooling_variant = "attention"
+text_encoder_variant = "last_hidden_state"
+device = "cpu"
+''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"\Aclassification_loss_variant must be one of: hard_ce, weighted_label_smoothing_005\Z",
+    ):
+        load_q2_config(config_path)
+
+
+def test_load_q2_config_rejects_smoothing_for_corn_classification(tmp_path: Path) -> None:
+    archive = tmp_path / "data.zip"
+    archive.write_bytes(b"zip")
+    seven_zip = tmp_path / "7za"
+    seven_zip.write_bytes(b"tool")
+    seven_zip.chmod(0o755)
+    bert_model = tmp_path / "bert-base-uncased"
+    bert_model.mkdir()
+    config_path = tmp_path / "q2.toml"
+    config_path.write_text(
+        '''[paths]
+archive = "data.zip"
+seven_zip = "7za"
+bert_model = "bert-base-uncased"
+output_dir = "artifacts/q2"
+
+[training]
+seed = 7
+epochs = 3
+batch_size = 2
+learning_rate = 0.001
+weight_decay = 0.01
+hidden_size = 16
+heads = 4
+layers = 1
+dropout = 0.0
+regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
+dropout_consistency_variant = "none"
+class_weight_exponent = 1.0
+synthetic_missingness_enabled = true
+fusion_variant = "gated"
+text_adapter_variant = "identity"
+classification_variant = "corn"
+classification_loss_variant = "weighted_label_smoothing_005"
+temporal_position_variant = "none"
+temporal_pooling_variant = "attention"
+text_encoder_variant = "last_hidden_state"
+device = "cpu"
+''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"\Aweighted_label_smoothing_005 requires classification_variant=flat\Z",
+    ):
+        load_q2_config(config_path)
+
+
+def test_load_q2_config_rejects_smoothing_with_rdrop(tmp_path: Path) -> None:
+    archive = tmp_path / "data.zip"
+    archive.write_bytes(b"zip")
+    seven_zip = tmp_path / "7za"
+    seven_zip.write_bytes(b"tool")
+    seven_zip.chmod(0o755)
+    bert_model = tmp_path / "bert-base-uncased"
+    bert_model.mkdir()
+    config_path = tmp_path / "q2.toml"
+    config_path.write_text(
+        '''[paths]
+archive = "data.zip"
+seven_zip = "7za"
+bert_model = "bert-base-uncased"
+output_dir = "artifacts/q2"
+
+[training]
+seed = 7
+epochs = 3
+batch_size = 2
+learning_rate = 0.001
+weight_decay = 0.01
+hidden_size = 16
+heads = 4
+layers = 1
+dropout = 0.1
+regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
+dropout_consistency_variant = "rdrop_alpha_1"
+class_weight_exponent = 1.0
+synthetic_missingness_enabled = true
+fusion_variant = "gated"
+text_adapter_variant = "identity"
+classification_variant = "flat"
+classification_loss_variant = "weighted_label_smoothing_005"
+temporal_position_variant = "none"
+temporal_pooling_variant = "attention"
+text_encoder_variant = "last_hidden_state"
+device = "cpu"
+''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"\Aweighted_label_smoothing_005 cannot be combined with rdrop_alpha_1\Z",
+    ):
+        load_q2_config(config_path)
 
 
 @pytest.mark.parametrize(("variant", "dropout"), [("none", "0.0"), ("rdrop_alpha_1", "0.1")])
@@ -442,6 +647,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -487,6 +693,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -534,6 +741,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -580,6 +788,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "corn"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -627,6 +836,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "{variant}"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -673,6 +883,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "{variant}"
 text_encoder_variant = "last_hidden_state"
@@ -719,6 +930,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "{variant}"
@@ -765,6 +977,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = {value}
@@ -814,6 +1027,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "unsupported"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -863,6 +1077,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "unsupported"
 text_encoder_variant = "last_hidden_state"
@@ -912,6 +1127,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "unsupported"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -958,6 +1174,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "unsupported"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -1007,6 +1224,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "unsupported"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -1065,6 +1283,7 @@ synthetic_missingness_enabled = {value}
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -1138,6 +1357,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
@@ -1185,6 +1405,7 @@ synthetic_missingness_enabled = true
 fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
+classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
