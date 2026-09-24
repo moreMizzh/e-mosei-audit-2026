@@ -377,6 +377,7 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     assert manifest["training"]["polarity_consistency_loss_weight"] == 0.0
     assert manifest["training"]["class_weight_exponent"] == 1.0
     assert manifest["training"]["fusion_variant"] == "gated"
+    assert "architecture" not in manifest
     assert manifest["training"]["text_adapter_variant"] == "identity"
     assert manifest["training"]["synthetic_missingness"]["enabled"] is True
     assert classification["confusion_matrix"]["labels"] == ["Negative", "Neutral", "Positive"]
