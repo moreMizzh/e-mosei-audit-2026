@@ -13,6 +13,7 @@ from e_mosei_audit.q2.config import (
     validate_classification_variant,
     validate_fusion_variant,
     validate_text_adapter_variant,
+    validate_temporal_position_variant,
 )
 
 
@@ -94,6 +95,7 @@ class MaskAwareTemporalFusion(nn.Module):
         layers: int = 2,
         dropout: float = 0.1,
         fusion_variant: str = "gated",
+        temporal_position_variant: str = "none",
         text_adapter_variant: str = "identity",
         classification_variant: str = "flat",
     ) -> None:
@@ -101,6 +103,7 @@ class MaskAwareTemporalFusion(nn.Module):
         if hidden_size < 1 or heads < 1 or layers < 1 or hidden_size % heads:
             raise ValueError("hidden_size must be positive, layers/heads positive, and hidden_size divisible by heads")
         self.fusion_variant = validate_fusion_variant(fusion_variant)
+        self.temporal_position_variant = validate_temporal_position_variant(temporal_position_variant)
         self.text_adapter_variant = validate_text_adapter_variant(text_adapter_variant)
         self.classification_variant = validate_classification_variant(classification_variant)
         if self.fusion_variant == "late_expert_shared" and self.classification_variant == "corn":
@@ -226,6 +229,15 @@ class MaskAwareTemporalFusion(nn.Module):
         fused = fused.masked_fill(~temporal.unsqueeze(-1), 0.0)
         if self.fusion_variant == "pairwise_hadamard_residual":
             fused = fused + _pairwise_hadamard_residual(states, availability, masks.temporal)
+        if self.temporal_position_variant == "sinusoidal":
+            positions = _sinusoidal_position_encoding(
+                fused.shape[1],
+                fused.shape[-1],
+                device=fused.device,
+                dtype=fused.dtype,
+            )
+            fused = fused + positions.unsqueeze(0) * temporal.unsqueeze(-1)
+            fused = fused.masked_fill(~temporal.unsqueeze(-1), 0.0)
 
         encoded = self.temporal_encoder(fused, src_key_padding_mask=~temporal)
         encoded = encoded.masked_fill(~temporal.unsqueeze(-1), 0.0)
@@ -365,6 +377,25 @@ class MaskAwareTemporalFusion(nn.Module):
 
 def _projection(input_size: int, hidden_size: int) -> nn.Sequential:
     return nn.Sequential(nn.Linear(input_size, hidden_size), nn.LayerNorm(hidden_size), nn.GELU())
+
+
+def _sinusoidal_position_encoding(
+    positions: int,
+    hidden_size: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return fixed Vaswani-style position features without model state."""
+
+    position_indexes = torch.arange(positions, device=device, dtype=dtype).unsqueeze(1)
+    pair_indexes = torch.arange((hidden_size + 1) // 2, device=device, dtype=dtype)
+    divisors = torch.pow(torch.tensor(10000.0, device=device, dtype=dtype), 2 * pair_indexes / hidden_size)
+    angles = position_indexes / divisors
+    encoding = torch.empty((positions, hidden_size), device=device, dtype=dtype)
+    encoding[:, 0::2] = torch.sin(angles)
+    encoding[:, 1::2] = torch.cos(angles[:, : hidden_size // 2])
+    return encoding
 
 
 def _pooled_lmf_residual(

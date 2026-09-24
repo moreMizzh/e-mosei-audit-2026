@@ -13,6 +13,7 @@ from e_mosei_audit.q2.model import (
     _POOLED_LMF_RANK,
     _pairwise_hadamard_residual,
     _pooled_lmf_residual,
+    _sinusoidal_position_encoding,
 )
 
 
@@ -59,11 +60,12 @@ class RecordingAttention(nn.Module):
 
 
 class RecordingEncoder(nn.Module):
-    """Delegate to the shared encoder while recording late-expert padding masks."""
+    """Delegate to the shared encoder while recording its inputs and padding masks."""
 
     def __init__(self, delegate: nn.TransformerEncoder) -> None:
         super().__init__()
         self.delegate = delegate
+        self.inputs: list[torch.Tensor] = []
         self.src_key_padding_masks: list[torch.Tensor] = []
 
     def forward(
@@ -75,6 +77,7 @@ class RecordingEncoder(nn.Module):
     ) -> torch.Tensor:
         if src_key_padding_mask is None:
             raise AssertionError("late-expert encoding must pass src_key_padding_mask")
+        self.inputs.append(src.detach().clone())
         self.src_key_padding_masks.append(src_key_padding_mask.detach().clone())
         return self.delegate(
             src,
@@ -1337,3 +1340,229 @@ def test_frozen_bert_encoder_uses_three_token_rows_without_gradients() -> None:
     assert bert.calls is not None
     assert bert.calls[0].shape == (2, 50)
     assert bert.calls[3] is False
+
+
+def test_sinusoidal_position_encoding_uses_vaswani_pairs_for_odd_hidden_width() -> None:
+    positions = 3
+
+    encoding = _sinusoidal_position_encoding(
+        positions,
+        5,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+    )
+
+    pair_indexes = torch.arange(3, dtype=torch.float64)
+    angles = torch.arange(1, positions, dtype=torch.float64).unsqueeze(1) / torch.pow(
+        torch.tensor(10000.0, dtype=torch.float64),
+        2 * pair_indexes / 5,
+    )
+    expected = torch.empty(2, 5, dtype=torch.float64)
+    expected[:, 0::2] = torch.sin(angles)
+    expected[:, 1::2] = torch.cos(angles[:, :2])
+
+    assert encoding.device == torch.device("cpu")
+    assert encoding.dtype == torch.float64
+    assert torch.isfinite(encoding).all()
+    torch.testing.assert_close(encoding[0], torch.tensor([0.0, 1.0, 0.0, 1.0, 0.0], dtype=torch.float64))
+    torch.testing.assert_close(encoding[1:], expected)
+
+
+def test_sinusoidal_position_variant_preserves_gated_state_rng_and_none_forward() -> None:
+    torch.manual_seed(131)
+    none = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_position_variant="none",
+    ).eval()
+    none_successor = torch.rand(5)
+
+    torch.manual_seed(131)
+    sinusoidal = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_position_variant="sinusoidal",
+    ).eval()
+    sinusoidal_successor = torch.rand(5)
+
+    assert sum(parameter.numel() for parameter in none.parameters()) == sum(
+        parameter.numel() for parameter in sinusoidal.parameters()
+    )
+    assert list(none.state_dict()) == list(sinusoidal.state_dict())
+    assert all(torch.equal(none.state_dict()[name], sinusoidal.state_dict()[name]) for name in none.state_dict())
+    assert torch.equal(none_successor, sinusoidal_successor)
+
+    torch.manual_seed(131)
+    default = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+
+    text = torch.randn(2, 5, 768)
+    audio = torch.randn(2, 5, 74)
+    vision = torch.randn(2, 5, 35)
+    masks = TensorMasks(
+        text=torch.ones(2, 5, dtype=torch.bool),
+        audio=torch.ones(2, 5, dtype=torch.bool),
+        vision=torch.ones(2, 5, dtype=torch.bool),
+        temporal=torch.ones(2, 5, dtype=torch.bool),
+    )
+
+    assert_same_public_output(
+        default(text=text, audio=audio, vision=vision, masks=masks),
+        none(text=text, audio=audio, vision=vision, masks=masks),
+    )
+
+
+def test_sinusoidal_positions_reach_only_observed_fused_temporal_slots() -> None:
+    torch.manual_seed(137)
+    gated = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+    torch.manual_seed(137)
+    sinusoidal = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_position_variant="sinusoidal",
+    ).eval()
+    gated_recorder = RecordingEncoder(gated.temporal_encoder)
+    sinusoidal_recorder = RecordingEncoder(sinusoidal.temporal_encoder)
+    gated.temporal_encoder = gated_recorder
+    sinusoidal.temporal_encoder = sinusoidal_recorder
+
+    text_available = torch.tensor([[True, False, True, True, True]])
+    audio_available = torch.tensor([[True, False, False, True, True]])
+    vision_available = torch.tensor([[False, False, True, True, True]])
+    temporal_mask = torch.tensor([[True, True, True, False, True]])
+    masks = TensorMasks(
+        text=text_available,
+        audio=audio_available,
+        vision=vision_available,
+        temporal=temporal_mask,
+    )
+    text = torch.randn(1, 5, 768)
+    audio = torch.randn(1, 5, 74)
+    vision = torch.randn(1, 5, 35)
+
+    gated(text=text, audio=audio, vision=vision, masks=masks)
+    sinusoidal(text=text, audio=audio, vision=vision, masks=masks)
+
+    temporal = temporal_mask & (text_available | audio_available | vision_available)
+    expected_positions = _sinusoidal_position_encoding(
+        5,
+        16,
+        device=text.device,
+        dtype=text.dtype,
+    )
+    gated_input = gated_recorder.inputs[0]
+    sinusoidal_input = sinusoidal_recorder.inputs[0]
+
+    torch.testing.assert_close(
+        sinusoidal_input[0, temporal[0]] - gated_input[0, temporal[0]],
+        expected_positions[temporal[0]],
+    )
+    assert torch.equal(gated_input[0, ~temporal[0]], torch.zeros_like(gated_input[0, ~temporal[0]]))
+    assert torch.equal(
+        sinusoidal_input[0, ~temporal[0]], torch.zeros_like(sinusoidal_input[0, ~temporal[0]])
+    )
+    assert torch.equal(sinusoidal_recorder.src_key_padding_masks[0], ~temporal)
+
+
+def test_sinusoidal_gated_ignores_unavailable_raw_modality_values() -> None:
+    torch.manual_seed(139)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_position_variant="sinusoidal",
+    ).eval()
+    temporal = torch.ones(2, 5, dtype=torch.bool)
+    text_available = temporal.clone()
+    text_available[0, 1] = False
+    audio_available = temporal.clone()
+    audio_available[0, 2] = False
+    audio_available[1, 3] = False
+    vision_available = temporal.clone()
+    vision_available[1, 0] = False
+    masks = TensorMasks(
+        text=text_available,
+        audio=audio_available,
+        vision=vision_available,
+        temporal=temporal,
+    )
+    text = torch.randn(2, 5, 768).masked_fill(~text_available.unsqueeze(-1), 0.0)
+    audio = torch.randn(2, 5, 74).masked_fill(~audio_available.unsqueeze(-1), 0.0)
+    vision = torch.randn(2, 5, 35).masked_fill(~vision_available.unsqueeze(-1), 0.0)
+
+    baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+    changed = model(
+        text=text.masked_fill(~text_available.unsqueeze(-1), 1_000_000.0),
+        audio=audio.masked_fill(~audio_available.unsqueeze(-1), 1_000_000.0),
+        vision=vision.masked_fill(~vision_available.unsqueeze(-1), 1_000_000.0),
+        masks=masks,
+    )
+
+    assert_same_public_output(changed, baseline)
+
+
+def test_sinusoidal_gated_ignores_appended_fully_masked_padding() -> None:
+    torch.manual_seed(149)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_position_variant="sinusoidal",
+    ).eval()
+    positions, padding = 4, 2
+    text = torch.randn(2, positions, 768)
+    audio = torch.randn(2, positions, 74)
+    vision = torch.randn(2, positions, 35)
+    masks = TensorMasks(
+        text=torch.ones(2, positions, dtype=torch.bool),
+        audio=torch.ones(2, positions, dtype=torch.bool),
+        vision=torch.ones(2, positions, dtype=torch.bool),
+        temporal=torch.ones(2, positions, dtype=torch.bool),
+    )
+    padded_masks = TensorMasks(
+        text=torch.cat((masks.text, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        audio=torch.cat((masks.audio, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        vision=torch.cat((masks.vision, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        temporal=torch.cat((masks.temporal, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+    )
+    padded_model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_position_variant="sinusoidal",
+    ).eval()
+    padded_model.load_state_dict(model.state_dict())
+    base_recorder = RecordingEncoder(model.temporal_encoder)
+    padded_recorder = RecordingEncoder(padded_model.temporal_encoder)
+    model.temporal_encoder = base_recorder
+    padded_model.temporal_encoder = padded_recorder
+
+    baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+    padded = padded_model(
+        text=torch.cat((text, torch.zeros(2, padding, 768)), dim=1),
+        audio=torch.cat((audio, torch.zeros(2, padding, 74)), dim=1),
+        vision=torch.cat((vision, torch.zeros(2, padding, 35)), dim=1),
+        masks=padded_masks,
+    )
+
+    torch.testing.assert_close(padded.logits, baseline.logits)
+    torch.testing.assert_close(padded.score, baseline.score)
+    torch.testing.assert_close(padded.gates[:, :positions], baseline.gates)
+    torch.testing.assert_close(padded.temporal_attention[:, :positions], baseline.temporal_attention)
+    assert torch.equal(padded.gates[:, positions:], torch.zeros_like(padded.gates[:, positions:]))
+    assert torch.equal(
+        padded.temporal_attention[:, positions:], torch.zeros_like(padded.temporal_attention[:, positions:])
+    )
+    torch.testing.assert_close(padded_recorder.inputs[0][:, :positions], base_recorder.inputs[0])
+    assert torch.equal(
+        _sinusoidal_position_encoding(positions + padding, 16, device=text.device, dtype=text.dtype)[:positions],
+        _sinusoidal_position_encoding(positions, 16, device=text.device, dtype=text.dtype),
+    )
