@@ -109,6 +109,8 @@ class MaskAwareTemporalFusion(nn.Module):
         self.temporal_pooling_variant = validate_temporal_pooling_variant(temporal_pooling_variant)
         self.text_adapter_variant = validate_text_adapter_variant(text_adapter_variant)
         self.classification_variant = validate_classification_variant(classification_variant)
+        if self.fusion_variant == "late_expert_shared" and self.temporal_pooling_variant == "attention_availability":
+            raise ValueError("attention_availability temporal pooling is unsupported with late_expert_shared fusion")
         if self.fusion_variant == "late_expert_shared" and self.classification_variant == "corn":
             raise ValueError("corn classification is unsupported with late_expert_shared fusion")
         self.text_projection = _projection(768, hidden_size)

@@ -216,6 +216,21 @@ def test_temporal_pooling_variant_rejects_unknown_value() -> None:
         )
 
 
+def test_attention_availability_pooling_rejects_late_expert_shared_fusion() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"\Aattention_availability temporal pooling is unsupported with late_expert_shared fusion\Z",
+    ):
+        MaskAwareTemporalFusion(
+            hidden_size=16,
+            heads=4,
+            layers=1,
+            dropout=0.0,
+            fusion_variant="late_expert_shared",
+            temporal_pooling_variant="attention_availability",
+        )
+
+
 def test_attention_availability_zero_bias_is_exactly_attention() -> None:
     torch.manual_seed(157)
     attention = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
