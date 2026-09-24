@@ -1322,6 +1322,48 @@ def test_check_q2_verifies_inputs_without_training_or_creating_output(tmp_path: 
     assert not config.output_dir.exists()
 
 
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        (
+            {"dropout_consistency_variant": "unsupported"},
+            "dropout_consistency_variant must be one of: none, rdrop_alpha_1",
+        ),
+        (
+            {"dropout_consistency_variant": "rdrop_alpha_1", "dropout": 0.0},
+            "rdrop_alpha_1 requires a finite dropout > 0",
+        ),
+        (
+            {"dropout_consistency_variant": "rdrop_alpha_1", "dropout": float("nan")},
+            "rdrop_alpha_1 requires a finite dropout > 0",
+        ),
+        (
+            {"dropout_consistency_variant": "rdrop_alpha_1", "dropout": float("inf")},
+            "rdrop_alpha_1 requires a finite dropout > 0",
+        ),
+        (
+            {
+                "dropout_consistency_variant": "rdrop_alpha_1",
+                "dropout": 0.1,
+                "classification_variant": "corn",
+            },
+            "rdrop_alpha_1 requires classification_variant=flat",
+        ),
+    ],
+)
+def test_check_q2_rejects_direct_invalid_dropout_semantic_before_output_or_archive(
+    tmp_path: Path, updates: dict[str, object], message: str
+) -> None:
+    config = replace(runner_config(tmp_path), **updates)
+    archive = runner_archive_with_inaccessible_test()
+
+    with pytest.raises(ValueError, match=rf"\A{message}\Z"):
+        check_q2(config, archive=archive, token_encoder=TinyTokenEncoder())
+
+    assert archive.verify_count == 0
+    assert not config.output_dir.exists()
+
+
 def test_manifest_dropout_consistency_variant_defaults_and_validates() -> None:
     assert q2_runner._manifest_dropout_consistency_variant({}) == "none"
     assert q2_runner._manifest_dropout_consistency_variant({"dropout_consistency_variant": "none"}) == "none"

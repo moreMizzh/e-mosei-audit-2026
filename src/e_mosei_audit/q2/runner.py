@@ -293,6 +293,11 @@ def check_q2(
 ) -> dict[str, int]:
     """Validate all read-only Q2 inputs without training or creating an output."""
 
+    validate_dropout_consistency_training(
+        config.dropout_consistency_variant,
+        classification_variant=config.classification_variant,
+        dropout=config.dropout,
+    )
     _validate_output_target(config.output_dir)
     active_archive = archive or SevenZipArchive(config.archive, config.seven_zip)
     active_archive.verify()
