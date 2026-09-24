@@ -124,7 +124,7 @@ Run the Step 2 command. Expected: all encoder and mask/fusion regression tests p
 - Modify: `src/e_mosei_audit/q2/runner.py`
 - Modify: `tests/test_q2_runner.py`
 
-- [ ] **Step 1: Write failing runner tests**
+- [x] **Step 1: Write failing runner tests**
 
 Add a fake scalar-mix token encoder exposing `trainable_parameters`, `trainable_state_dict`, and strict state loading alongside the existing `encode` method. With an `last4_scalar_mix` config and inaccessible fake `test` member, require a one-epoch `run_q2` to:
 
@@ -134,7 +134,7 @@ Add a fake scalar-mix token encoder exposing `trainable_parameters`, `trainable_
 
 Add saved-valid tests requiring scalar-mix manifest reconstruction to instantiate/select `last4_scalar_mix`, load `model.pt` with `strict=True`, strictly load `text_encoder_state.pt`, and report valid samples. Add historical-manifest coverage that omits `text_encoder_variant` and reconstructs `last_hidden_state` without requiring an encoder-state file. Add deterministic failures for an invalid manifest variant, a missing scalar-mix state file, and malformed scalar-mix state.
 
-- [ ] **Step 2: Run runner tests to prove red**
+- [x] **Step 2: Run runner tests to prove red**
 
 Run:
 
@@ -142,7 +142,7 @@ Run:
 
 Expected: normal construction omits the variant, optimizer ignores encoder state, no scalar-mix state is written, or saved-valid cannot restore it.
 
-- [ ] **Step 3: Implement runner propagation, atomic persistence, and legacy fallback**
+- [x] **Step 3: Implement runner propagation, atomic persistence, and legacy fallback**
 
 Add `_manifest_text_encoder_variant(training)` that returns `"last_hidden_state"` only if the field is absent and otherwise calls `validate_text_encoder_variant`. Pass `config.text_encoder_variant` to `FrozenBertEncoder.from_local` in `run_q2` and `check_q2`; pass the manifest variant in `evaluate_saved_q2_valid`.
 
@@ -152,7 +152,7 @@ Extend `_write_run_outputs` to receive the selected encoder state and variant. R
 
 During saved-valid evaluation, preserve `model.load_state_dict(..., strict=True)`. After creating the local scalar-mix encoder, require/load `text_encoder_state.pt` through its strict loader before `_evaluate`; default/historical final-layer runs must not require the file. Do not load Attachment 3 or the Attachment 2 test split in this command.
 
-- [ ] **Step 4: Verify runner and CLI tests are green**
+- [x] **Step 4: Verify runner and CLI tests are green**
 
 Run:
 
@@ -160,7 +160,7 @@ Run:
 
 Expected: runner and CLI tests pass, fake test sentinels remain unread, and saved-valid remains strict.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
     git add src/e_mosei_audit/q2/runner.py tests/test_q2_runner.py
     git commit -m "feat: persist Q2 scalar-mix encoder state"
