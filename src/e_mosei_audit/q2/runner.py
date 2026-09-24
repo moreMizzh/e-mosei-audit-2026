@@ -23,6 +23,7 @@ from e_mosei_audit.q2.config import (
     Q2Config,
     validate_classification_variant,
     validate_dropout_consistency_variant,
+    validate_dropout_consistency_training,
     validate_fusion_variant,
     validate_temporal_position_variant,
     validate_temporal_pooling_variant,
@@ -181,6 +182,11 @@ def run_q2(
 ) -> dict[str, int | float | None]:
     """Train on aligned Attachment 2 and make final predictions for aligned Attachment 3."""
 
+    validate_dropout_consistency_training(
+        config.dropout_consistency_variant,
+        classification_variant=config.classification_variant,
+        dropout=config.dropout,
+    )
     _validate_output_target(config.output_dir)
     active_archive = archive or SevenZipArchive(config.archive, config.seven_zip)
     active_archive.verify()
@@ -501,7 +507,14 @@ def _manifest_dropout_consistency_variant(training: Mapping[str, object]) -> str
 
     if "dropout_consistency_variant" not in training:
         return "none"
-    return validate_dropout_consistency_variant(training["dropout_consistency_variant"])
+    variant = validate_dropout_consistency_variant(training["dropout_consistency_variant"])
+    if variant == "none":
+        return variant
+    return validate_dropout_consistency_training(
+        variant,
+        classification_variant=_manifest_classification_variant(training),
+        dropout=_manifest_dropout(training, "dropout"),
+    )
 
 
 def _manifest_normalizer_array(manifest: Mapping[str, object], field: str, width: int) -> np.ndarray:

@@ -1133,6 +1133,44 @@ def test_run_q2_forwards_dropout_consistency_variant_to_training(monkeypatch, tm
     assert observed_variants == ["rdrop_alpha_1"]
 
 
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        (
+            {"dropout_consistency_variant": "unsupported"},
+            "dropout_consistency_variant must be one of: none, rdrop_alpha_1",
+        ),
+        (
+            {"dropout_consistency_variant": "rdrop_alpha_1", "dropout": 0.0},
+            "rdrop_alpha_1 requires dropout > 0",
+        ),
+        (
+            {"dropout_consistency_variant": "rdrop_alpha_1", "dropout": float("nan")},
+            "rdrop_alpha_1 requires dropout > 0",
+        ),
+        (
+            {
+                "dropout_consistency_variant": "rdrop_alpha_1",
+                "dropout": 0.1,
+                "classification_variant": "corn",
+            },
+            "rdrop_alpha_1 requires classification_variant=flat",
+        ),
+    ],
+)
+def test_run_q2_rejects_direct_invalid_dropout_semantic_before_output_or_archive(
+    tmp_path: Path, updates: dict[str, object], message: str
+) -> None:
+    config = replace(runner_config(tmp_path), **updates)
+    archive = runner_archive_with_inaccessible_test()
+
+    with pytest.raises(ValueError, match=rf"\A{message}\Z"):
+        run_q2(config, archive=archive, token_encoder=TinyTokenEncoder())
+
+    assert archive.verify_count == 0
+    assert not config.output_dir.exists()
+
+
 def test_run_q2_skips_training_synthetic_missingness_when_disabled(monkeypatch, tmp_path: Path) -> None:
     members: dict[str, object] = {
         ALIGNED_50_MEMBER: {
@@ -1284,7 +1322,13 @@ def test_manifest_dropout_consistency_variant_defaults_and_validates() -> None:
     assert q2_runner._manifest_dropout_consistency_variant({}) == "none"
     assert q2_runner._manifest_dropout_consistency_variant({"dropout_consistency_variant": "none"}) == "none"
     assert (
-        q2_runner._manifest_dropout_consistency_variant({"dropout_consistency_variant": "rdrop_alpha_1"})
+        q2_runner._manifest_dropout_consistency_variant(
+            {
+                "dropout_consistency_variant": "rdrop_alpha_1",
+                "classification_variant": "flat",
+                "dropout": 0.1,
+            }
+        )
         == "rdrop_alpha_1"
     )
     with pytest.raises(
@@ -2736,15 +2780,34 @@ def test_evaluate_saved_q2_valid_rejects_invalid_or_unrestorable_scalar_mix_stat
         )
 
 
+@pytest.mark.parametrize(
+    ("variant", "dropout", "classification_variant", "message"),
+    [
+        ("unsupported", 0.0, "flat", "dropout_consistency_variant must be one of: none, rdrop_alpha_1"),
+        ("rdrop_alpha_1", 0.0, "flat", "rdrop_alpha_1 requires dropout > 0"),
+        ("rdrop_alpha_1", 0.1, "corn", "rdrop_alpha_1 requires classification_variant=flat"),
+    ],
+)
 def test_evaluate_saved_q2_valid_rejects_invalid_dropout_semantic_before_archive_or_model(
-    monkeypatch, tmp_path: Path
+    monkeypatch,
+    tmp_path: Path,
+    variant: str,
+    dropout: float,
+    classification_variant: str,
+    message: str,
 ) -> None:
     config = runner_config(tmp_path)
     run_dir = tmp_path / "saved-invalid-rdrop-run"
     _write_saved_scalar_mix_run(run_dir, config, text_encoder_variant="last_hidden_state")
     manifest_path = run_dir / "run_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["training"]["dropout_consistency_variant"] = "unsupported"
+    manifest["training"].update(
+        {
+            "dropout_consistency_variant": variant,
+            "dropout": dropout,
+            "classification_variant": classification_variant,
+        }
+    )
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     archive = RunnerArchive(
         {
@@ -2765,7 +2828,7 @@ def test_evaluate_saved_q2_valid_rejects_invalid_dropout_semantic_before_archive
 
     with pytest.raises(
         ValueError,
-        match=r"\Adropout_consistency_variant must be one of: none, rdrop_alpha_1\Z",
+        match=rf"\A{message}\Z",
     ):
         evaluate_saved_q2_valid(
             run_dir,
@@ -2775,6 +2838,7 @@ def test_evaluate_saved_q2_valid_rejects_invalid_dropout_semantic_before_archive
         )
 
     assert archive.verify_count == 0
+    assert not (tmp_path / "invalid-rdrop-valid-report.json").exists()
 
 
 def test_output_validation_requires_existing_parent_without_creating_it(tmp_path: Path) -> None:

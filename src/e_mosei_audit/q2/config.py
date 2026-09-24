@@ -210,11 +210,11 @@ def _validate_training(values: Mapping[str, object]) -> None:
     validate_fusion_variant(values["fusion_variant"])
     validate_text_adapter_variant(values["text_adapter_variant"])
     classification_variant = validate_classification_variant(values["classification_variant"])
-    dropout_consistency_variant = validate_dropout_consistency_variant(values["dropout_consistency_variant"])
-    if dropout_consistency_variant == "rdrop_alpha_1" and classification_variant != "flat":
-        raise ValueError("rdrop_alpha_1 requires classification_variant=flat")
-    if dropout_consistency_variant == "rdrop_alpha_1" and values["dropout"] <= 0:
-        raise ValueError("rdrop_alpha_1 requires dropout > 0")
+    validate_dropout_consistency_training(
+        values["dropout_consistency_variant"],
+        classification_variant=classification_variant,
+        dropout=float(values["dropout"]),
+    )
     validate_temporal_position_variant(values["temporal_position_variant"])
     validate_temporal_pooling_variant(values["temporal_pooling_variant"])
     validate_text_encoder_variant(values["text_encoder_variant"])
@@ -257,6 +257,22 @@ def validate_dropout_consistency_variant(value: object) -> str:
     if not isinstance(value, str) or value not in DROPOUT_CONSISTENCY_VARIANTS:
         raise ValueError("dropout_consistency_variant must be one of: none, rdrop_alpha_1")
     return value
+
+
+def validate_dropout_consistency_training(
+    value: object,
+    *,
+    classification_variant: str,
+    dropout: float,
+) -> str:
+    """Validate the fixed R-Drop objective against its training prerequisites."""
+
+    variant = validate_dropout_consistency_variant(value)
+    if variant == "rdrop_alpha_1" and classification_variant != "flat":
+        raise ValueError("rdrop_alpha_1 requires classification_variant=flat")
+    if variant == "rdrop_alpha_1" and not dropout > 0:
+        raise ValueError("rdrop_alpha_1 requires dropout > 0")
+    return variant
 
 
 def validate_temporal_position_variant(value: object) -> str:
