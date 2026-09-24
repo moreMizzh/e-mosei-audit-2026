@@ -1562,7 +1562,12 @@ def test_sinusoidal_gated_ignores_appended_fully_masked_padding() -> None:
         padded.temporal_attention[:, positions:], torch.zeros_like(padded.temporal_attention[:, positions:])
     )
     # CPU projections can vary with sequence shape before position addition; helper prefix and padding remain exact.
-    torch.testing.assert_close(padded_recorder.inputs[0][:, :positions], base_recorder.inputs[0])
+    torch.testing.assert_close(
+        padded_recorder.inputs[0][:, :positions],
+        base_recorder.inputs[0],
+        rtol=0.0,
+        atol=1e-6,
+    )
     assert torch.equal(
         padded_recorder.inputs[0][:, positions:],
         torch.zeros_like(padded_recorder.inputs[0][:, positions:]),
