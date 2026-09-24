@@ -10,7 +10,9 @@ from e_mosei_audit.q2.model import (
     FrozenBertEncoder,
     MaskAwareTemporalFusion,
     TensorMasks,
+    _POOLED_LMF_RANK,
     _pairwise_hadamard_residual,
+    _pooled_lmf_residual,
 )
 
 
@@ -105,6 +107,34 @@ def example_masks(*, audio_available: bool = True) -> TensorMasks:
     )
 
 
+def pooled_lmf_model_pair() -> tuple[MaskAwareTemporalFusion, MaskAwareTemporalFusion]:
+    """Create matched gated and rank-4 LMF models with a deterministic residual."""
+
+    torch.manual_seed(107)
+    gated = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+    torch.manual_seed(107)
+    pooled_lmf = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="pooled_lmf_r4",
+    ).eval()
+    pooled_lmf.load_state_dict(gated.state_dict(), strict=False)
+    with torch.no_grad():
+        pooled_lmf.pooled_lmf_factors.copy_(torch.eye(16).repeat(3, _POOLED_LMF_RANK, 1, 1))
+    return gated, pooled_lmf
+
+
+def assert_same_public_output(left: object, right: object) -> None:
+    assert torch.equal(left.logits, right.logits)
+    assert torch.equal(left.score, right.score)
+    assert torch.equal(left.gates, right.gates)
+    assert torch.equal(left.temporal_attention, right.temporal_attention)
+    assert left.expert_weights is right.expert_weights is None
+    assert left.ordinal_logits is right.ordinal_logits is None
+
+
 def test_mask_aware_fusion_returns_three_logits_and_bounded_score() -> None:
     model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
 
@@ -175,6 +205,197 @@ def test_pairwise_hadamard_residual_averages_available_products_and_zeros_paddin
     expected = torch.tensor([[[0.0, 0.0], [6.0, 20.0], [41.0 / 3.0, 119.0 / 3.0], [0.0, 0.0]]])
 
     torch.testing.assert_close(_pairwise_hadamard_residual(states, availability, temporal), expected)
+
+
+def test_pooled_lmf_residual_pools_available_means_and_zeroes_incomplete_rows() -> None:
+    states = (
+        torch.tensor([[[2.0, 4.0], [4.0, 8.0], [101.0, 103.0]]]),
+        torch.tensor([[[3.0, 5.0], [107.0, 109.0], [113.0, 127.0]]]),
+        torch.tensor([[[7.0, 11.0], [13.0, 17.0], [131.0, 137.0]]]),
+    )
+    availability = torch.tensor([[[True, True, True], [True, False, True], [True, False, True]]])
+    temporal = torch.tensor([[True, True, False]])
+    factors = torch.eye(2).repeat(3, 4, 1, 1)
+    expected = torch.tensor([[360.0, 1680.0]])
+
+    torch.testing.assert_close(_pooled_lmf_residual(states, availability, temporal, factors), expected)
+
+    missing_audio = availability.clone()
+    missing_audio[..., 1] = False
+    assert torch.equal(
+        _pooled_lmf_residual(states, missing_audio, temporal, factors),
+        torch.zeros_like(expected),
+    )
+
+
+def test_pooled_lmf_r4_constructs_with_rank_factors_and_preserves_gated_initialization() -> None:
+    torch.manual_seed(109)
+    gated = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
+    torch.manual_seed(109)
+    pooled_lmf = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="pooled_lmf_r4",
+    )
+
+    output = pooled_lmf(
+        text=torch.randn(2, 50, 768),
+        audio=torch.randn(2, 50, 74),
+        vision=torch.randn(2, 50, 35),
+        masks=example_masks(),
+    )
+
+    assert _POOLED_LMF_RANK == 4
+    assert pooled_lmf.pooled_lmf_factors.shape == (3, 4, 16, 16)
+    assert torch.isfinite(output.logits).all()
+    assert torch.isfinite(output.score).all()
+    assert all(torch.equal(gated.state_dict()[name], pooled_lmf.state_dict()[name]) for name in gated.state_dict())
+    assert sum(parameter.numel() for parameter in pooled_lmf.parameters()) - sum(
+        parameter.numel() for parameter in gated.parameters()
+    ) == 3 * 4 * 16 * 16
+
+
+@pytest.mark.parametrize(
+    ("available",),
+    [
+        ((True, False, False),),
+        ((False, True, False),),
+        ((False, False, True),),
+        ((True, True, False),),
+        ((True, False, True),),
+        ((False, True, True),),
+    ],
+)
+def test_pooled_lmf_r4_is_exactly_gated_and_has_zero_factor_gradients_without_all_modalities(
+    available: tuple[bool, bool, bool],
+) -> None:
+    gated, pooled_lmf = pooled_lmf_model_pair()
+    temporal = torch.ones(2, 4, dtype=torch.bool)
+    masks = TensorMasks(
+        text=torch.full_like(temporal, available[0]),
+        audio=torch.full_like(temporal, available[1]),
+        vision=torch.full_like(temporal, available[2]),
+        temporal=temporal,
+    )
+    text = torch.randn(2, 4, 768)
+    audio = torch.randn(2, 4, 74)
+    vision = torch.randn(2, 4, 35)
+
+    with torch.no_grad():
+        gated_output = gated(text=text, audio=audio, vision=vision, masks=masks)
+    pooled_output = pooled_lmf(text=text, audio=audio, vision=vision, masks=masks)
+
+    assert_same_public_output(pooled_output, gated_output)
+    (pooled_output.logits.square().sum() + pooled_output.score.square().sum()).backward()
+    assert pooled_lmf.pooled_lmf_factors.grad is not None
+    assert torch.isfinite(pooled_lmf.pooled_lmf_factors.grad).all()
+    assert torch.equal(
+        pooled_lmf.pooled_lmf_factors.grad,
+        torch.zeros_like(pooled_lmf.pooled_lmf_factors.grad),
+    )
+
+
+def test_pooled_lmf_r4_changes_predictions_when_all_modalities_are_available() -> None:
+    gated, pooled_lmf = pooled_lmf_model_pair()
+    masks = TensorMasks(
+        text=torch.ones(2, 4, dtype=torch.bool),
+        audio=torch.ones(2, 4, dtype=torch.bool),
+        vision=torch.ones(2, 4, dtype=torch.bool),
+        temporal=torch.ones(2, 4, dtype=torch.bool),
+    )
+    text = torch.randn(2, 4, 768)
+    audio = torch.randn(2, 4, 74)
+    vision = torch.randn(2, 4, 35)
+
+    with torch.no_grad():
+        gated_output = gated(text=text, audio=audio, vision=vision, masks=masks)
+        pooled_output = pooled_lmf(text=text, audio=audio, vision=vision, masks=masks)
+
+    assert not (
+        torch.equal(pooled_output.logits, gated_output.logits) and torch.equal(pooled_output.score, gated_output.score)
+    )
+
+
+def test_pooled_lmf_r4_ignores_unavailable_raw_modality_values() -> None:
+    _, pooled_lmf = pooled_lmf_model_pair()
+    temporal = torch.ones(2, 4, dtype=torch.bool)
+    text_available = temporal.clone()
+    text_available[0, 1] = False
+    audio_available = temporal.clone()
+    audio_available[1, 2] = False
+    vision_available = temporal.clone()
+    vision_available[0, 3] = False
+    masks = TensorMasks(
+        text=text_available,
+        audio=audio_available,
+        vision=vision_available,
+        temporal=temporal,
+    )
+    text = torch.randn(2, 4, 768)
+    audio = torch.randn(2, 4, 74)
+    vision = torch.randn(2, 4, 35)
+
+    with torch.no_grad():
+        baseline = pooled_lmf(text=text, audio=audio, vision=vision, masks=masks)
+        changed = pooled_lmf(
+            text=text.masked_fill(~text_available.unsqueeze(-1), 1_000_000.0),
+            audio=audio.masked_fill(~audio_available.unsqueeze(-1), 1_000_000.0),
+            vision=vision.masked_fill(~vision_available.unsqueeze(-1), 1_000_000.0),
+            masks=masks,
+        )
+
+    assert_same_public_output(changed, baseline)
+
+
+def test_pooled_lmf_r4_ignores_appended_temporal_padding() -> None:
+    _, pooled_lmf = pooled_lmf_model_pair()
+    states = tuple(torch.randn(2, 3, 16) for _ in range(3))
+    availability = torch.ones(2, 3, 3, dtype=torch.bool)
+    temporal = torch.ones(2, 3, dtype=torch.bool)
+    padded_states = tuple(
+        torch.cat((state, torch.full((2, 2, 16), 1_000_000.0)), dim=1) for state in states
+    )
+    padded_availability = torch.ones(2, 5, 3, dtype=torch.bool)
+    padded_temporal = torch.cat((temporal, torch.zeros(2, 2, dtype=torch.bool)), dim=1)
+
+    torch.testing.assert_close(
+        _pooled_lmf_residual(states, availability, temporal, pooled_lmf.pooled_lmf_factors),
+        _pooled_lmf_residual(
+            padded_states,
+            padded_availability,
+            padded_temporal,
+            pooled_lmf.pooled_lmf_factors,
+        ),
+    )
+
+    masks = TensorMasks(
+        text=torch.ones(2, 3, dtype=torch.bool),
+        audio=torch.ones(2, 3, dtype=torch.bool),
+        vision=torch.ones(2, 3, dtype=torch.bool),
+        temporal=temporal,
+    )
+    text = torch.randn(2, 3, 768)
+    audio = torch.randn(2, 3, 74)
+    vision = torch.randn(2, 3, 35)
+    padded_masks = TensorMasks(
+        text=torch.ones(2, 5, dtype=torch.bool),
+        audio=torch.ones(2, 5, dtype=torch.bool),
+        vision=torch.ones(2, 5, dtype=torch.bool),
+        temporal=padded_temporal,
+    )
+
+    with torch.no_grad():
+        baseline = pooled_lmf(text=text, audio=audio, vision=vision, masks=masks)
+        padded = pooled_lmf(
+            text=torch.cat((text, torch.full((2, 2, 768), 1_000_000.0)), dim=1),
+            audio=torch.cat((audio, torch.full((2, 2, 74), 1_000_000.0)), dim=1),
+            vision=torch.cat((vision, torch.full((2, 2, 35), 1_000_000.0)), dim=1),
+            masks=padded_masks,
+        )
+
+    assert_same_public_output(padded, baseline)
 
 
 def test_pairwise_hadamard_residual_changes_predictions_with_all_modalities() -> None:
