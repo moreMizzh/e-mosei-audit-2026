@@ -204,6 +204,7 @@ def _q2_config(tmp_path: Path) -> Q2Config:
         text_adapter_variant="identity",
         classification_variant="flat",
         temporal_position_variant="none",
+        temporal_pooling_variant="attention",
         device="cpu",
     )
 
