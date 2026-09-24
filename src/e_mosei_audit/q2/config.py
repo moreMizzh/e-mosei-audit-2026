@@ -270,8 +270,13 @@ def validate_dropout_consistency_training(
     variant = validate_dropout_consistency_variant(value)
     if variant == "rdrop_alpha_1" and classification_variant != "flat":
         raise ValueError("rdrop_alpha_1 requires classification_variant=flat")
-    if variant == "rdrop_alpha_1" and not dropout > 0:
-        raise ValueError("rdrop_alpha_1 requires dropout > 0")
+    if variant == "rdrop_alpha_1" and (
+        isinstance(dropout, bool)
+        or not isinstance(dropout, (int, float))
+        or not math.isfinite(float(dropout))
+        or not dropout > 0
+    ):
+        raise ValueError("rdrop_alpha_1 requires a finite dropout > 0")
     return variant
 
 

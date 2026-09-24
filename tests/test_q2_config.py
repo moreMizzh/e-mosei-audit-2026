@@ -495,7 +495,7 @@ device = "cpu"
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=r"\Ardrop_alpha_1 requires dropout > 0\Z"):
+    with pytest.raises(ValueError, match=r"\Ardrop_alpha_1 requires a finite dropout > 0\Z"):
         load_q2_config(config_path)
 
 

@@ -1142,11 +1142,15 @@ def test_run_q2_forwards_dropout_consistency_variant_to_training(monkeypatch, tm
         ),
         (
             {"dropout_consistency_variant": "rdrop_alpha_1", "dropout": 0.0},
-            "rdrop_alpha_1 requires dropout > 0",
+            "rdrop_alpha_1 requires a finite dropout > 0",
         ),
         (
             {"dropout_consistency_variant": "rdrop_alpha_1", "dropout": float("nan")},
-            "rdrop_alpha_1 requires dropout > 0",
+            "rdrop_alpha_1 requires a finite dropout > 0",
+        ),
+        (
+            {"dropout_consistency_variant": "rdrop_alpha_1", "dropout": float("inf")},
+            "rdrop_alpha_1 requires a finite dropout > 0",
         ),
         (
             {
@@ -2784,7 +2788,7 @@ def test_evaluate_saved_q2_valid_rejects_invalid_or_unrestorable_scalar_mix_stat
     ("variant", "dropout", "classification_variant", "message"),
     [
         ("unsupported", 0.0, "flat", "dropout_consistency_variant must be one of: none, rdrop_alpha_1"),
-        ("rdrop_alpha_1", 0.0, "flat", "rdrop_alpha_1 requires dropout > 0"),
+        ("rdrop_alpha_1", 0.0, "flat", "rdrop_alpha_1 requires a finite dropout > 0"),
         ("rdrop_alpha_1", 0.1, "corn", "rdrop_alpha_1 requires classification_variant=flat"),
     ],
 )
