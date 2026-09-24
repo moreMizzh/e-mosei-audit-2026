@@ -193,7 +193,7 @@ Compare saved and recomputed clean metrics. Require 728 valid predictions, 27 sc
 
 Write the A/M comparison JSON, update only the README Val row and Test 未评估 row, and append the portfolio record. Accept only if clean valid macro-F1 is at least 0.6212527658; otherwise record actual metrics and permanently retire this exact fixed variant without tuning it.
 
-- [ ] **Step 6: Commit documentation only after result verification**
+- [x] **Step 6: Commit documentation only after result verification**
 
     git add README.md docs/superpowers/specs/2026-09-24-q2-exploration-portfolio.md
     git commit -m "docs: record Q2 sinusoidal position result"
