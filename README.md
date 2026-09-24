@@ -2,7 +2,7 @@
 
 ## 问题 2 跑分总表
 
-以下是附件 2 官方 `train/valid` 划分上的单次运行记录（固定 `seed=20260924`）。`macro-F1` 是当前候选的唯一主筛选指标；这些数值只是 valid 筛选证据，不代表泛化或最终赛题成绩。`v1/v2` 和 `v3/v4` 分别是保留的相同结果运行，表中不合并它们以保持产物可追溯。
+以下两表记录问题 2 每个模型/处理的单次运行结果（固定 `seed=20260924`）：Val 表来自附件 2 官方 `train/valid` 划分，Test 表只列出已完成的独立 test 推理。`macro-F1` 是当前候选的唯一主筛选指标；Val 数值只用于筛选，不代表泛化或最终赛题成绩。`v1/v2` 和 `v3/v4` 分别是保留的相同结果运行，表中不合并它们以保持产物可追溯。
 
 ### Val
 
@@ -24,10 +24,12 @@
 | Late-expert shared A，冻结 BERT | `q2-valid-late-expert-shared` | 0.611264 | 0.602684 | 0.615396 | 0.630821 | 1 | 淘汰：F1 未达硬门槛 |
 | Gated A，`learning_rate=0.0003` | `q2-valid-lr-0003` | 0.603022 | 0.597865 | 0.624782 | 0.645195 | 1 | 淘汰：F1 与缺失场景回退 |
 | Gated A + CORN 有序分类 | `q2-valid-corn` | 0.578297 | 0.579350 | 0.640587 | 0.632185 | 3 | 淘汰：F1、场景与 Positive F1 回退 |
+| Gated A + text-anchor residual | `q2-valid-text-anchor-residual` | 0.633242 | 0.612840 | 0.637156 | 0.636281 | 1 | 淘汰：clean F1 未达硬门槛 |
+| Gated A + pairwise Hadamard residual | `q2-valid-pairwise-hadamard-residual` | 0.631868 | 0.615855 | 0.624946 | 0.615701 | 1 | 淘汰：clean F1 未达硬门槛 |
 
 ### Test
 
-| 模型/处理 | 产物目录 | Test Accuracy | Test Macro-F1 | Test MAE | Test Pearson | 状态 |
+| 模型/处理 | 产物目录 | Accuracy | Macro-F1 | MAE | Pearson | 状态 |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | Gated v1 | `q2-default` | - | - | - | - | 未评估 |
 | Gated v2 | `q2-default-v2` | - | - | - | - | 未评估 |
@@ -45,6 +47,8 @@
 | Late-expert shared A，冻结 BERT | `q2-valid-late-expert-shared` | - | - | - | - | 未评估 |
 | Gated A，`learning_rate=0.0003` | `q2-valid-lr-0003` | - | - | - | - | 未评估 |
 | Gated A + CORN 有序分类 | `q2-valid-corn` | - | - | - | - | 未评估 |
+| Gated A + text-anchor residual | `q2-valid-text-anchor-residual` | - | - | - | - | 未评估 |
+| Gated A + pairwise Hadamard residual | `q2-valid-pairwise-hadamard-residual` | - | - | - | - | 未评估 |
 
 `Gated v4` 的 test 行来自模型冻结后的单次后验评估：checkpoint 先按附件 2 `valid` 的 macro-F1、再按 MAE 选定，之后仅对 727 条 `test` 样本推理，没有重训、调参或再次选模。其余候选均未评估；在当前探索期不得为了补全此表而运行 test，更不能将 valid 数值复制为 test 数值。
 
