@@ -19,7 +19,7 @@ import torch
 from torch import nn
 
 from e_mosei_audit.archive import SevenZipArchive
-from e_mosei_audit.q2.config import Q2Config
+from e_mosei_audit.q2.config import Q2Config, validate_fusion_variant
 from e_mosei_audit.q2.data import AlignedSplit, Attachment3Sample, load_aligned_train_valid, load_attachment3_aligned
 from e_mosei_audit.q2.missingness import (
     DroppedMasks,
@@ -188,6 +188,7 @@ def run_q2(
         heads=config.heads,
         layers=config.layers,
         dropout=config.dropout,
+        fusion_variant=config.fusion_variant,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     weights = _class_weights(
@@ -315,6 +316,7 @@ def evaluate_saved_q2_valid(
         heads=_manifest_positive_int(training, "heads"),
         layers=_manifest_positive_int(training, "layers"),
         dropout=_manifest_dropout(training, "dropout"),
+        fusion_variant=_manifest_fusion_variant(training),
     ).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     valid_masks = observed_masks(dataset.valid.text_bert, dataset.valid.audio, dataset.valid.vision)
@@ -395,6 +397,14 @@ def _manifest_dropout(manifest: Mapping[str, object], field: str) -> float:
     if not 0 <= value < 1:
         raise ValueError(f"run manifest {field} must be in [0, 1)")
     return float(value)
+
+
+def _manifest_fusion_variant(training: Mapping[str, object]) -> str:
+    """Treat historical saved runs as the original gated architecture."""
+
+    if "fusion_variant" not in training:
+        return "gated"
+    return validate_fusion_variant(training["fusion_variant"])
 
 
 def _manifest_normalizer_array(manifest: Mapping[str, object], field: str, width: int) -> np.ndarray:
@@ -696,6 +706,7 @@ def _write_run_outputs(
                     "regression_loss_weight": config.regression_loss_weight,
                     "polarity_consistency_loss_weight": config.polarity_consistency_loss_weight,
                     "class_weight_exponent": config.class_weight_exponent,
+                    "fusion_variant": config.fusion_variant,
                     "device": config.device,
                     "synthetic_missingness": {
                         "enabled": config.synthetic_missingness_enabled,

@@ -9,6 +9,8 @@ from typing import Any
 import torch
 from torch import nn
 
+from e_mosei_audit.q2.config import validate_fusion_variant
+
 
 @dataclass(frozen=True)
 class TensorMasks:
@@ -75,13 +77,25 @@ class FrozenBertEncoder:
 class MaskAwareTemporalFusion(nn.Module):
     """Fuse three aligned modalities without allowing unavailable evidence to leak."""
 
-    def __init__(self, *, hidden_size: int = 128, heads: int = 4, layers: int = 2, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        *,
+        hidden_size: int = 128,
+        heads: int = 4,
+        layers: int = 2,
+        dropout: float = 0.1,
+        fusion_variant: str = "gated",
+    ) -> None:
         super().__init__()
         if hidden_size < 1 or heads < 1 or layers < 1 or hidden_size % heads:
             raise ValueError("hidden_size must be positive, layers/heads positive, and hidden_size divisible by heads")
+        self.fusion_variant = validate_fusion_variant(fusion_variant)
         self.text_projection = _projection(768, hidden_size)
         self.audio_projection = _projection(74, hidden_size)
         self.vision_projection = _projection(35, hidden_size)
+        if self.fusion_variant == "mag_lite":
+            self.mag_shift = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.Tanh())
+            self.mag_gate = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.Sigmoid())
         self.gate = nn.Sequential(
             nn.Linear(hidden_size * 3 + 3, hidden_size),
             nn.GELU(),
@@ -121,6 +135,17 @@ class MaskAwareTemporalFusion(nn.Module):
         temporal = masks.temporal & any_available
         if not bool(temporal.any(dim=1).all()):
             raise ValueError("each sample must retain at least one observed temporal position")
+
+        if self.fusion_variant == "mag_lite":
+            mag_features = torch.cat((*states, availability[..., 1:].to(dtype=text.dtype)), dim=-1)
+            nonverbal_available = availability[..., 1:].any(dim=-1, keepdim=True)
+            text_update = states[0] + self.mag_gate(mag_features) * self.mag_shift(mag_features)
+            text_state = torch.where(
+                availability[..., 0:1] & nonverbal_available,
+                text_update,
+                states[0],
+            )
+            states = (text_state, states[1], states[2])
 
         gate_features = torch.cat((*states, availability.to(dtype=text.dtype)), dim=-1)
         gate_logits = self.gate(gate_features).masked_fill(~availability, float("-inf"))

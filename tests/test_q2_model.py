@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 
@@ -76,6 +77,65 @@ def test_unavailable_modality_values_cannot_change_any_fusion_output() -> None:
     torch.testing.assert_close(changed.score, baseline.score)
     torch.testing.assert_close(changed.gates, baseline.gates)
     torch.testing.assert_close(changed.temporal_attention, baseline.temporal_attention)
+
+
+def test_mag_lite_fusion_returns_finite_bounded_predictions_and_weights() -> None:
+    model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0, fusion_variant="mag_lite")
+
+    output = model(
+        text=torch.randn(2, 50, 768),
+        audio=torch.randn(2, 50, 74),
+        vision=torch.randn(2, 50, 35),
+        masks=example_masks(),
+    )
+
+    assert output.logits.shape == (2, 3)
+    assert output.score.shape == (2,)
+    assert output.gates.shape == (2, 50, 3)
+    assert output.temporal_attention.shape == (2, 50)
+    assert torch.isfinite(output.logits).all()
+    assert torch.isfinite(output.score).all()
+    assert torch.isfinite(output.gates).all()
+    assert torch.isfinite(output.temporal_attention).all()
+    assert torch.all(output.score <= 3)
+    assert torch.all(output.score >= -3)
+
+
+def test_mag_lite_ignores_raw_audio_and_vision_when_both_are_unavailable() -> None:
+    torch.manual_seed(13)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16, heads=4, layers=1, dropout=0.0, fusion_variant="mag_lite"
+    ).eval()
+    temporal = torch.ones(2, 50, dtype=torch.bool)
+    masks = TensorMasks(
+        text=temporal.clone(),
+        audio=torch.zeros_like(temporal),
+        vision=torch.zeros_like(temporal),
+        temporal=temporal,
+    )
+    text = torch.randn(2, 50, 768)
+    baseline = model(
+        text=text,
+        audio=torch.zeros(2, 50, 74),
+        vision=torch.zeros(2, 50, 35),
+        masks=masks,
+    )
+    changed = model(
+        text=text,
+        audio=torch.full((2, 50, 74), 1_000_000.0),
+        vision=torch.full((2, 50, 35), 1_000_000.0),
+        masks=masks,
+    )
+
+    assert torch.equal(changed.logits, baseline.logits)
+    assert torch.equal(changed.score, baseline.score)
+    assert torch.equal(changed.gates, baseline.gates)
+    assert torch.equal(changed.temporal_attention, baseline.temporal_attention)
+
+
+def test_mask_aware_fusion_rejects_unsupported_fusion_variant() -> None:
+    with pytest.raises(ValueError, match="fusion_variant must be one of: gated, mag_lite"):
+        MaskAwareTemporalFusion(fusion_variant="unsupported")
 
 
 def test_frozen_bert_encoder_uses_three_token_rows_without_gradients() -> None:

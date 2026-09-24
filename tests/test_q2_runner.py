@@ -265,6 +265,7 @@ def runner_config(tmp_path: Path) -> Q2Config:
         polarity_consistency_loss_weight=0.0,
         class_weight_exponent=1.0,
         synthetic_missingness_enabled=True,
+        fusion_variant="gated",
         device="cpu",
     )
 
@@ -300,6 +301,7 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     assert manifest["training"]["regression_loss_weight"] == 0.5
     assert manifest["training"]["polarity_consistency_loss_weight"] == 0.0
     assert manifest["training"]["class_weight_exponent"] == 1.0
+    assert manifest["training"]["fusion_variant"] == "gated"
     assert manifest["training"]["synthetic_missingness"]["enabled"] is True
     assert classification["confusion_matrix"]["labels"] == ["Negative", "Neutral", "Positive"]
     assert sum(sum(row) for row in classification["confusion_matrix"]["counts"]) == 3
@@ -313,6 +315,29 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     assert archive.verify_count == 1
     assert "缺失影响汇总" in report
     assert "最不利 macro-F1 场景" in report
+
+
+def test_run_q2_records_mag_lite_fusion_variant(tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a training or validation input"},
+        }
+    }
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+    config = replace(
+        runner_config(tmp_path),
+        output_dir=tmp_path / "q2-mag-output",
+        fusion_variant="mag_lite",
+    )
+
+    run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["training"]["fusion_variant"] == "mag_lite"
 
 
 def test_run_q2_forwards_configured_regression_loss_weight_to_training(monkeypatch, tmp_path: Path) -> None:
@@ -568,6 +593,108 @@ def test_evaluate_saved_q2_valid_writes_report_without_accessing_test(tmp_path: 
     assert sum(sum(row) for row in report["confusion_matrix"]["counts"]) == 3
     assert set(report["prediction_score_summary"]) == {"mean", "std", "min", "max"}
     assert archive.verify_count == 1
+
+
+def test_evaluate_saved_q2_valid_reconstructs_mag_lite_checkpoint(tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a valid evaluation input"},
+        }
+    }
+    archive = RunnerArchive(members)
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-mag-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(
+        hidden_size=16, heads=4, layers=1, dropout=0.0, fusion_variant="mag_lite"
+    )
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "fusion_variant": "mag_lite",
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "mag-valid-report.json",
+        archive=archive,
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert report["sample_count"] == 3
+    assert archive.verify_count == 1
+
+
+def test_evaluate_saved_q2_valid_rejects_unsupported_manifest_fusion_variant(tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a valid evaluation input"},
+        }
+    }
+    archive = RunnerArchive(members)
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-invalid-variant-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "fusion_variant": "unsupported",
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="fusion_variant must be one of: gated, mag_lite"):
+        evaluate_saved_q2_valid(
+            run_dir,
+            tmp_path / "invalid-variant-report.json",
+            archive=archive,
+            token_encoder=TinyTokenEncoder(),
+        )
 
 
 def test_evaluate_saved_q2_valid_rejects_manifest_with_missing_normalizer_field(tmp_path: Path) -> None:

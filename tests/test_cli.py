@@ -200,6 +200,7 @@ def _q2_config(tmp_path: Path) -> Q2Config:
         polarity_consistency_loss_weight=0.0,
         class_weight_exponent=1.0,
         synthetic_missingness_enabled=True,
+        fusion_variant="gated",
         device="cpu",
     )
 

@@ -11,6 +11,7 @@ import tomllib
 
 
 _PATH_FIELDS = ("archive", "seven_zip", "bert_model", "output_dir")
+FUSION_VARIANTS = ("gated", "mag_lite")
 _TRAINING_FIELDS = (
     "seed",
     "epochs",
@@ -25,6 +26,7 @@ _TRAINING_FIELDS = (
     "polarity_consistency_loss_weight",
     "class_weight_exponent",
     "synthetic_missingness_enabled",
+    "fusion_variant",
     "device",
 )
 
@@ -48,6 +50,7 @@ class Q2Config:
     polarity_consistency_loss_weight: float
     class_weight_exponent: float
     synthetic_missingness_enabled: bool
+    fusion_variant: str
     device: str
 
 
@@ -89,6 +92,7 @@ def load_q2_config(path: Path) -> Q2Config:
         polarity_consistency_loss_weight=float(values["polarity_consistency_loss_weight"]),
         class_weight_exponent=float(values["class_weight_exponent"]),
         synthetic_missingness_enabled=values["synthetic_missingness_enabled"],
+        fusion_variant=validate_fusion_variant(values["fusion_variant"]),
         device=values["device"],
     )
 
@@ -171,7 +175,16 @@ def _validate_training(values: Mapping[str, object]) -> None:
         raise ValueError("class_weight_exponent is outside its valid range")
     if not isinstance(values["synthetic_missingness_enabled"], bool):
         raise ValueError("synthetic_missingness_enabled must be boolean")
+    validate_fusion_variant(values["fusion_variant"])
     if values["hidden_size"] % values["heads"]:
         raise ValueError("hidden_size must be divisible by heads")
     if not isinstance(values["device"], str) or not values["device"]:
         raise ValueError("device must be a non-empty string")
+
+
+def validate_fusion_variant(value: object) -> str:
+    """Require one of the persisted Q2 fusion architecture names."""
+
+    if not isinstance(value, str) or value not in FUSION_VARIANTS:
+        raise ValueError("fusion_variant must be one of: gated, mag_lite")
+    return value
