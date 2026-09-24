@@ -1109,13 +1109,20 @@ def test_evaluate_saved_q2_valid_strictly_reconstructs_text_anchor_residual_chec
         encoding="utf-8",
     )
     observed_strict: list[bool] = []
+    observed_fusion_variants: list[str] = []
+    original_model_constructor = q2_runner.MaskAwareTemporalFusion
     original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
+
+    def recording_model_constructor(*args, **kwargs):
+        observed_fusion_variants.append(kwargs["fusion_variant"])
+        return original_model_constructor(*args, **kwargs)
 
     def recording_load_state_dict(self, *args, **kwargs):
         assert kwargs["strict"] is True
         observed_strict.append(kwargs["strict"])
         return original_load_state_dict(self, *args, **kwargs)
 
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", recording_model_constructor)
     monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
 
     report = evaluate_saved_q2_valid(
@@ -1130,6 +1137,7 @@ def test_evaluate_saved_q2_valid_strictly_reconstructs_text_anchor_residual_chec
     assert sum(sum(row) for row in report["confusion_matrix"]["counts"]) == 3
     assert archive.verify_count == 1
     assert observed_strict == [True]
+    assert observed_fusion_variants == ["text_anchor_residual"]
 
 
 def test_evaluate_saved_q2_valid_strictly_reconstructs_corn_checkpoint(monkeypatch, tmp_path: Path) -> None:
