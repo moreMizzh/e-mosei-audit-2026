@@ -22,6 +22,7 @@
 
 - 候选 A 已完成：关闭训练合成缺失得到 clean macro-F1 `0.6165677806`，较 v4 提升 `0.0153150148`，且 27 场景 mean/worst macro-F1 同时提升。它未达到 `0.6212527658`，但成为 B-D 的顺序控制对照；后续每轮只在 A 上额外改变一个预注册处理。
 - 候选 B 已淘汰：在 A 上加入固定 `polarity_consistency_loss_weight=0.10` 后，clean macro-F1 为 `0.6054532088`，较 A 下降 `0.0111145718`；Neutral F1 从 `0.4890109890` 降至 `0.4573170732`，MAE 从 `0.6213405132` 恶化至 `0.7194830775`。即使最差缺失场景 F1 略升，也不满足 clean/Neutral/MAE 护栏，因此不调该系数。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-consistency-010.json`。
+- 候选 C 已淘汰：在 A 上仅将 `fusion_variant` 从历史兼容的 `gated` 改为 `mag_lite`，clean macro-F1 为 `0.6007508180`，较 A 下降 `0.0158169626`，未达 `0.6212527658`。虽然 MAE 从 `0.6213405132` 改善至 `0.5781278610`，27 个缺失场景的 mean/worst macro-F1 从 `0.6037955229/0.5463436545` 降至 `0.5781485962/0.4818639743`。不改 MAG 的宽度、深度或缩放；进入 MulT-lite。比较记录：`artifacts/q2-valid-comparison-no-train-missingness-mag-lite.json`。
 
 ## 候选组合
 
@@ -29,15 +30,18 @@
 | --- | --- | --- | --- | --- |
 | A（完成） | 关闭训练合成缺失 | 当前每个训练 batch 会遮蔽 1-2 个模态的 10%-50% 连续段；ModDrop 说明这类增强为鲁棒性服务，但完整输入性能可能与鲁棒性存在权衡。该对照的 clean 与场景 F1 均提高。[[ModDrop]](https://doi.org/10.1109/TPAMI.2015.2461544) | 小 | 未达两点门槛，但作为后续顺序对照。 |
 | B（淘汰） | 极性-强度一致性损失 | 让连续回归头与三分类期望极性一致，直接利用现有标签与双头，针对 Neutral 边界而不加模型参数。多任务情感分解可行性见 [[Tian et al.]](https://aclanthology.org/W18-3306/)。固定 `0.10` 使 macro-F1 和 MAE 同时恶化。 | 小 | 不调系数，进入 MAG-lite。 |
-| C | MAG-lite 非语言残差 | 先用掩码感知的 audio/vision 残差更新投影后的 text，再保留现有门控和时序 Transformer。MAG 的机制是向预训练语言表示注入非语言条件偏移；本项目冻结 BERT，因而只验证简化后置版本。[[MAG]](https://aclanthology.org/2020.acl-main.214/) | 中 | 单层固定结构，不解冻 BERT；macro-F1 达目标且 MAE 不高于 v4 `+0.02`。 |
+| C（淘汰） | MAG-lite 非语言残差 | 先用掩码感知的 audio/vision 残差更新投影后的 text，再保留现有门控和时序 Transformer。MAG 的机制是向预训练语言表示注入非语言条件偏移；本项目冻结 BERT，因而只验证简化后置版本。该固定结构使 clean 与缺失场景 F1 都回退。[[MAG]](https://aclanthology.org/2020.acl-main.214/) | 中 | 单层固定结构，不解冻 BERT；不做后续 MAG 调参。 |
 | D | MulT-lite 定向交叉注意力 | 在当前“先凸门控、后时序编码”的信息压缩前保留模态身份，以 text<-audio、text<-vision 等定向注意力建模跨时交互。[[MulT]](https://aclanthology.org/P19-1656/) | 中高 | 每个方向一层，所有 K/V 缺失时零更新；macro-F1 达目标，掩码测试与 27 场景完整。 |
 | E | 受控缺失课程或完整教师-遮蔽学生蒸馏 | 仅在 A 显示 clean/鲁棒明确冲突时使用。课程匹配现有 10/30/50% 场景；蒸馏比重建原始特征小，符合不完整模态自蒸馏思路。[[UMDF]](https://ojs.aaai.org/index.php/AAAI/article/view/28871/) [[TFR-Net]](https://doi.org/10.1145/3474085.3475585) | 中 | 先固定一个课程或一个蒸馏系数，不网格；clean 与最差场景 F1 都必须改善。 |
+| F | 冻结 BERT 的输出残差 adapter | 在 BERT 输出、文本投影之前加入固定瓶颈 32 的残差 adapter，`W_up` 零初始化；BERT 继续 `no_grad`。它检验文本表示的小规模任务适配，而不是全量微调。[[Adapters]](https://proceedings.mlr.press/v97/houlsby19a.html) | 中 | 只新增一个固定结构；从 A 独立派生，clean macro-F1 达目标且场景 mean/worst 不比 A 低 `0.01`。 |
+| G | 时序 late-expert fusion | 各模态保留独立时序表征和分类 logits，再用 availability-masked reliability gate 融合 logits。它与 D 形成“交互不足”对“早融合噪声”的可证伪诊断。[[TFN]](https://aclanthology.org/D17-1115/) | 中 | 只替换融合路径；从 A 独立派生，不调 gate 宽度，采用与 D 相同的 clean/场景护栏。 |
 
 ## 不作为首轮的路线
 
 - MISA-lite 需要 shared/private 分解、重构和多个辅助系数；本地训练集小且单 seed，不应先进入多损失搜索。[[MISA]](https://arxiv.org/abs/2005.03545)
 - 监督对比损失可在 B 后作为独立候选，但 64 的 batch、人工缺失和固定单次实验会提高正样本不足与系数选择风险。[[SupCon]](https://papers.neurips.cc/paper_files/paper/2020/hash/d89a66c7c80a29b1bdbab0f2a1a94af8-Abstract.html)
 - Focal/effective-number 权重是合理的分类不平衡工具，但本地增大逆频率权重已损害 Neutral F1，故排在表示与一致性路线之后。[[Class-Balanced Loss]](https://openaccess.thecvf.com/content_CVPR_2019/html/Cui_Class-Balanced_Loss_Based_on_Effective_Number_of_Samples_CVPR_2019_paper.html)
+- 不在同一 valid 集上搜索多个 checkpoint、融合权重或 MAG 超参数；任何 ensemble 只有在两个各自冻结、各自达标的候选出现后，才作为单独预注册诊断。
 
 ## 执行与判定
 
