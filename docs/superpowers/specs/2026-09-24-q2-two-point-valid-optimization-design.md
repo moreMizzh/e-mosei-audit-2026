@@ -17,6 +17,8 @@
 - dropout `0.2` 的候选 macro-F1 为 `0.6037977`，仅提升 `0.0025450`，不满足新门槛；Neutral F1 降至 `0.4654731`，因此不继续沿 dropout 调参。
 - 分类优先损失候选完成：`regression_loss_weight=0.25` 的 clean valid macro-F1 为 `0.6010339501`，较 v4 下降 `0.0002188157`，未达到 `0.6212527658`。准确率提高 `0.0109890110`，但 Neutral F1 从 `0.4817518` 降至 `0.4383562`，MAE 增加 `0.0235345960`；因此淘汰该候选，不重复或扩展该方向。审计确认 `728` 个 valid 样本、`27` 个场景行、`30` 条附件 3 预测，且输入引用、seed 和归一化统计与 v4 一致。比较记录：`artifacts/q2-valid-comparison-v4-regression-loss-025.json`。
 - 容量候选完成：`hidden_size=256` 的 clean valid macro-F1 为 `0.5883282663`，较 v4 下降 `0.0129244995`；准确率下降 `0.0109890110`，MAE 增加 `0.0134999752`，Pearson 下降 `0.0263313645`。Neutral F1 `0.4782609` 仍低于 v4，故淘汰容量方向。审计同样确认 `728` 个 valid 样本、`27` 个场景行、`30` 条附件 3 预测，输入引用、seed 和归一化统计与 v4 一致。比较记录：`artifacts/q2-valid-comparison-v4-hidden-256.json`。
+- 类别权重指数候选完成：`class_weight_exponent=1.25` 的 clean valid macro-F1 为 `0.5910328778`，较 v4 下降 `0.0102198880`；Neutral F1 由 `0.4817518` 降至 `0.4294118`，故淘汰该方向。审计确认 `728` 个 valid 样本、`27` 个场景行、`30` 条附件 3 预测，输入引用、seed 和归一化统计与 v4 一致。比较记录：`artifacts/q2-valid-comparison-v4-class-weight-125.json`。
+- v4 保存权重的只读 valid-logit 诊断表明：在 `[-2.0, 2.0]`、步长 `0.01` 的偏置网格中，Neutral 单偏置的最高 macro-F1 为 `0.6050859145`；同时调整 Neutral/Positive 的最高值为 `0.6099789379`，仍低于门槛。因此不把后处理决策校准作为后续候选。记录：`artifacts/q2-valid-v4-decision-bias-diagnosis.json`。
 
 ## 候选顺序
 
@@ -24,7 +26,8 @@
 
 1. **分类优先损失平衡（已淘汰）**：新增显式 `regression_loss_weight`，从现有隐式值 `0.5` 调为 `0.25`，输出 `artifacts/q2-valid-regression-loss-025`。保持分类交叉熵、类别权重、架构和 dropout `0.1` 不变。其 macro-F1 下降，停止该方向。
 2. **容量（已淘汰）**：将 `hidden_size` 从 `128` 改为 `256`，输出 `artifacts/q2-valid-hidden-256`。其他参数回到 v4，包括 `regression_loss_weight=0.5`。其四个 clean valid 指标均未改善，停止该方向。
-3. **类别权重指数（下一候选）**：令类别权重为 `w_c(alpha) = n_c^(-alpha) * N / sum_j n_j^(1-alpha)`，令 `alpha=1.25`，输出 `artifacts/q2-valid-class-weight-125`。`alpha=1.0` 与原有 `N / (3*n_c)` 公式严格相同，归一化使每个训练样本的平均权重保持为 1。目标是改善低 F1 的 Neutral，且不改变标签、模型或数据切分。
+3. **类别权重指数（已淘汰）**：令类别权重为 `w_c(alpha) = n_c^(-alpha) * N / sum_j n_j^(1-alpha)`，令 `alpha=1.25`，输出 `artifacts/q2-valid-class-weight-125`。`alpha=1.0` 与原有 `N / (3*n_c)` 公式严格相同，归一化使每个训练样本的平均权重保持为 1。其 Neutral F1 与 macro-F1 都下降，停止该方向。
+4. **训练合成缺失（下一候选）**：关闭训练阶段随机连续模态缺失，仅保留原始可用性掩码；输出 `artifacts/q2-valid-no-train-missingness`。其余训练参数完全回到 v4，并保持验证场景和附件 3 推理的审计输出。理由是前三个参数方向均未改善 clean valid，而原始训练每个 batch 都人为遮蔽 1 至 2 个模态的 `10%` 至 `50%` 可用段，可能与当前 clean-only 目标冲突。
 
 ## 实现与验证
 
