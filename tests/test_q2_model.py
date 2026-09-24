@@ -995,7 +995,7 @@ def test_mask_aware_fusion_rejects_unsupported_fusion_variant() -> None:
         ValueError,
         match=(
             r"\Afusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared, "
-            r"text_anchor_residual, pairwise_hadamard_residual\Z"
+            r"text_anchor_residual, pairwise_hadamard_residual, pooled_lmf_r4\Z"
         ),
     ):
         MaskAwareTemporalFusion(fusion_variant="unsupported")
