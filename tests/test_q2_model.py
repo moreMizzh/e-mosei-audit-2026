@@ -138,6 +138,109 @@ def test_text_anchor_residual_fusion_constructs_and_returns_valid_predictions() 
     assert torch.isin(output.logits.argmax(dim=1), torch.tensor([0, 1, 2])).all()
 
 
+def test_text_anchor_residual_ignores_all_unavailable_raw_modality_values() -> None:
+    torch.manual_seed(63)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="text_anchor_residual",
+    ).eval()
+    temporal = torch.ones(2, 50, dtype=torch.bool)
+    text_available = temporal.clone()
+    text_available[0, [3, 11]] = False
+    text_available[1, [5, 19]] = False
+    audio_available = temporal.clone()
+    audio_available[0, [1, 5, 17]] = False
+    audio_available[1, [2, 8, 23]] = False
+    vision_available = temporal.clone()
+    vision_available[0, [2, 8, 23]] = False
+    vision_available[1, [1, 5, 17]] = False
+    masks = TensorMasks(
+        text=text_available,
+        audio=audio_available,
+        vision=vision_available,
+        temporal=temporal,
+    )
+    text = torch.randn(2, 50, 768)
+    audio = torch.randn(2, 50, 74)
+    vision = torch.randn(2, 50, 35)
+
+    with torch.no_grad():
+        baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+        changed = model(
+            text=text.masked_fill(~text_available.unsqueeze(-1), 1_000_000.0),
+            audio=audio.masked_fill(~audio_available.unsqueeze(-1), 1_000_000.0),
+            vision=vision.masked_fill(~vision_available.unsqueeze(-1), 1_000_000.0),
+            masks=masks,
+        )
+
+    assert torch.equal(changed.logits, baseline.logits)
+    assert torch.equal(changed.score, baseline.score)
+    assert torch.equal(changed.gates, baseline.gates)
+    assert torch.equal(changed.temporal_attention, baseline.temporal_attention)
+
+
+def test_text_anchor_residual_changes_predictions_when_text_is_available() -> None:
+    torch.manual_seed(67)
+    gated = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+    anchor = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="text_anchor_residual",
+    ).eval()
+    anchor.load_state_dict(gated.state_dict(), strict=True)
+    masks = example_masks()
+    text = torch.randn(2, 50, 768)
+    audio = torch.randn(2, 50, 74)
+    vision = torch.randn(2, 50, 35)
+
+    with torch.no_grad():
+        gated_output = gated(text=text, audio=audio, vision=vision, masks=masks)
+        anchor_output = anchor(text=text, audio=audio, vision=vision, masks=masks)
+
+    assert not (
+        torch.equal(anchor_output.logits, gated_output.logits) and torch.equal(anchor_output.score, gated_output.score)
+    )
+
+
+def test_text_anchor_residual_is_exactly_gated_when_all_text_is_missing() -> None:
+    torch.manual_seed(71)
+    gated = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+    anchor = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="text_anchor_residual",
+    ).eval()
+    anchor.load_state_dict(gated.state_dict(), strict=True)
+    temporal = torch.ones(2, 50, dtype=torch.bool)
+    masks = TensorMasks(
+        text=torch.zeros_like(temporal),
+        audio=temporal.clone(),
+        vision=temporal.clone(),
+        temporal=temporal,
+    )
+    text = torch.randn(2, 50, 768)
+    audio = torch.randn(2, 50, 74)
+    vision = torch.randn(2, 50, 35)
+
+    with torch.no_grad():
+        gated_output = gated(text=text, audio=audio, vision=vision, masks=masks)
+        anchor_output = anchor(text=text, audio=audio, vision=vision, masks=masks)
+
+    assert torch.equal(anchor_output.logits, gated_output.logits)
+    assert torch.equal(anchor_output.score, gated_output.score)
+    assert torch.equal(anchor_output.gates, gated_output.gates)
+    assert torch.equal(anchor_output.temporal_attention, gated_output.temporal_attention)
+    assert anchor_output.expert_weights is gated_output.expert_weights is None
+    assert anchor_output.ordinal_logits is gated_output.ordinal_logits is None
+
+
 @pytest.mark.parametrize("fusion_variant", ["gated", "mag_lite", "mult_lite"])
 def test_corn_classifier_returns_normalized_three_class_log_probabilities(fusion_variant: str) -> None:
     model = MaskAwareTemporalFusion(

@@ -221,6 +221,15 @@ class MaskAwareTemporalFusion(nn.Module):
         availability_fraction = (availability & temporal.unsqueeze(-1)).sum(dim=1).to(text.dtype)
         availability_fraction = availability_fraction / temporal.sum(dim=1, keepdim=True).to(text.dtype)
         representation = torch.cat((pooled, availability_fraction), dim=1)
+        if self.fusion_variant == "text_anchor_residual":
+            text_temporal = masks.temporal & availability[..., 0]
+            pooled_text, _ = self._encode_late_expert(states[0], text_temporal)
+            text_coverage = text_temporal.sum(dim=1, keepdim=True).to(text.dtype)
+            text_coverage = text_coverage / masks.temporal.sum(dim=1, keepdim=True).to(text.dtype)
+            text_anchor = torch.cat(
+                (pooled_text, text_coverage, text_coverage.new_zeros((text.shape[0], 2))), dim=1
+            )
+            representation = representation + text_anchor
         logits, ordinal_logits = self._classify(representation)
         return Q2Output(
             logits=logits,
