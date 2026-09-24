@@ -78,6 +78,12 @@ def test_mask_aware_fusion_returns_three_logits_and_bounded_score() -> None:
     assert torch.all(output.score >= -3)
 
 
+def test_mask_aware_fusion_accepts_late_expert_shared_variant() -> None:
+    model = MaskAwareTemporalFusion(fusion_variant="late_expert_shared")
+
+    assert model.fusion_variant == "late_expert_shared"
+
+
 def test_houlsby_output_adapter_returns_finite_bounded_predictions_and_weights() -> None:
     model = MaskAwareTemporalFusion(
         hidden_size=16,
@@ -392,7 +398,10 @@ def test_mult_lite_partial_masks_isolate_raw_values_and_preserve_attention_gradi
 
 
 def test_mask_aware_fusion_rejects_unsupported_fusion_variant() -> None:
-    with pytest.raises(ValueError, match="fusion_variant must be one of: gated, mag_lite, mult_lite"):
+    with pytest.raises(
+        ValueError,
+        match=r"\Afusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared\Z",
+    ):
         MaskAwareTemporalFusion(fusion_variant="unsupported")
 
 
