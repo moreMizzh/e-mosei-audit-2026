@@ -4,6 +4,8 @@
 
 以下是附件 2 官方 `train/valid` 划分上的单次运行记录（固定 `seed=20260924`）。`macro-F1` 是当前候选的唯一主筛选指标；这些数值只是 valid 筛选证据，不代表泛化或最终赛题成绩。`v1/v2` 和 `v3/v4` 分别是保留的相同结果运行，表中不合并它们以保持产物可追溯。
 
+### Val
+
 | 模型/处理 | 产物目录 | Accuracy | Macro-F1 | MAE | Pearson | 最佳 epoch | 结论 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Gated v1 | `q2-default` | 0.638736 | 0.601454 | 0.855128 | 0.647105 | 1 | 历史基线 |
@@ -18,6 +20,9 @@
 | Gated A + 极性-强度一致性 `0.10` | `q2-valid-polarity-consistency-010` | 0.637363 | 0.605453 | 0.719483 | 0.591059 | 1 | 淘汰 |
 | MAG-lite A，冻结 BERT | `q2-valid-mag-lite` | 0.597527 | 0.600751 | **0.578128** | 0.656475 | 3 | 淘汰：F1 与缺失场景回退 |
 | MulT-lite A，冻结 BERT | `q2-valid-mult-lite` | 0.622253 | 0.588483 | 0.652516 | 0.577256 | 1 | 淘汰：F1、MAE 与缺失场景回退 |
+| Gated A + 冻结文本输出 adapter b32 | `q2-valid-text-adapter-b32` | 0.640110 | 0.618033 | 0.636682 | 0.611919 | 1 | 淘汰：未达 F1 硬门槛，但有正向信号 |
+
+### Test
 
 | 模型/处理 | 产物目录 | Test Accuracy | Test Macro-F1 | Test MAE | Test Pearson | 状态 |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
@@ -33,6 +38,7 @@
 | Gated A + 极性-强度一致性 `0.10` | `q2-valid-polarity-consistency-010` | - | - | - | - | 未评估 |
 | MAG-lite A，冻结 BERT | `q2-valid-mag-lite` | - | - | - | - | 未评估 |
 | MulT-lite A，冻结 BERT | `q2-valid-mult-lite` | - | - | - | - | 未评估 |
+| Gated A + 冻结文本输出 adapter b32 | `q2-valid-text-adapter-b32` | - | - | - | - | 未评估 |
 
 第二张表没有数值是刻意的：本项目当前禁止读取、训练、选模或汇报附件 2 `test`，因此没有任何有效的 test 跑分。未来只有在模型与方案冻结后、按赛题允许的单次最终评估流程获得标签时，才应填写该表，且绝不能将 valid 数值复制为 test 数值。
 
