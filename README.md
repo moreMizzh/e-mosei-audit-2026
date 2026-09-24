@@ -21,6 +21,7 @@
 | MAG-lite A，冻结 BERT | `q2-valid-mag-lite` | 0.597527 | 0.600751 | **0.578128** | 0.656475 | 3 | 淘汰：F1 与缺失场景回退 |
 | MulT-lite A，冻结 BERT | `q2-valid-mult-lite` | 0.622253 | 0.588483 | 0.652516 | 0.577256 | 1 | 淘汰：F1、MAE 与缺失场景回退 |
 | Gated A + 冻结文本输出 adapter b32 | `q2-valid-text-adapter-b32` | 0.640110 | 0.618033 | 0.636682 | 0.611919 | 1 | 淘汰：未达 F1 硬门槛，但有正向信号 |
+| Late-expert shared A，冻结 BERT | `q2-valid-late-expert-shared` | 0.611264 | 0.602684 | 0.615396 | 0.630821 | 1 | 淘汰：F1 未达硬门槛 |
 
 ### Test
 
@@ -29,7 +30,7 @@
 | Gated v1 | `q2-default` | - | - | - | - | 未评估 |
 | Gated v2 | `q2-default-v2` | - | - | - | - | 未评估 |
 | Gated v3 | `q2-default-v3` | - | - | - | - | 未评估 |
-| Gated v4 | `q2-default-v4` | - | - | - | - | 未评估 |
+| Gated v4 | `q2-default-v4` | 0.634113 | 0.598946 | 0.644122 | 0.658875 | 冻结后一次性评估，727 条 |
 | Gated，`dropout=0.20` | `q2-valid-dropout-020` | - | - | - | - | 未评估 |
 | Gated，`regression_loss_weight=0.25` | `q2-valid-regression-loss-025` | - | - | - | - | 未评估 |
 | Gated，`hidden_size=256` | `q2-valid-hidden-256` | - | - | - | - | 未评估 |
@@ -39,8 +40,9 @@
 | MAG-lite A，冻结 BERT | `q2-valid-mag-lite` | - | - | - | - | 未评估 |
 | MulT-lite A，冻结 BERT | `q2-valid-mult-lite` | - | - | - | - | 未评估 |
 | Gated A + 冻结文本输出 adapter b32 | `q2-valid-text-adapter-b32` | - | - | - | - | 未评估 |
+| Late-expert shared A，冻结 BERT | `q2-valid-late-expert-shared` | - | - | - | - | 未评估 |
 
-第二张表没有数值是刻意的：本项目当前禁止读取、训练、选模或汇报附件 2 `test`，因此没有任何有效的 test 跑分。未来只有在模型与方案冻结后、按赛题允许的单次最终评估流程获得标签时，才应填写该表，且绝不能将 valid 数值复制为 test 数值。
+`Gated v4` 的 test 行来自模型冻结后的单次后验评估：checkpoint 先按附件 2 `valid` 的 macro-F1、再按 MAE 选定，之后仅对 727 条 `test` 样本推理，没有重训、调参或再次选模。其余候选均未评估；在当前探索期不得为了补全此表而运行 test，更不能将 valid 数值复制为 test 数值。
 
 这是一个面向 2026 年研究生数学建模竞赛 E 题的可复现数据入口。它把原始分卷 ZIP 作为只读输入：先审计附件 1 至附件 4 的数据契约，再为问题 1 从附件 1 的 100 条原始视频生成可追溯的三模态时间序列特征。
 
