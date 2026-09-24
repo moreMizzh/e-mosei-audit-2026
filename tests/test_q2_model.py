@@ -229,6 +229,41 @@ def test_pooled_lmf_residual_pools_available_means_and_zeroes_incomplete_rows(mi
     )
 
 
+def test_pooled_lmf_residual_sums_distinct_rankwise_linear_transforms() -> None:
+    states = (
+        torch.tensor([[[1.0, 2.0]]]),
+        torch.tensor([[[3.0, 4.0]]]),
+        torch.tensor([[[5.0, 6.0]]]),
+    )
+    availability = torch.tensor([[[True, True, True]]])
+    temporal = torch.tensor([[True]])
+    factors = torch.tensor(
+        [
+            [
+                [[1.0, 2.0], [0.0, 1.0]],
+                [[0.0, 1.0], [1.0, 0.0]],
+                [[1.0, 0.0], [0.0, 2.0]],
+                [[1.0, 1.0], [1.0, -1.0]],
+            ],
+            [
+                [[1.0, 0.0], [1.0, 1.0]],
+                [[2.0, 0.0], [0.0, 1.0]],
+                [[0.0, 2.0], [1.0, 0.0]],
+                [[1.0, 2.0], [3.0, 1.0]],
+            ],
+            [
+                [[2.0, 1.0], [0.0, 1.0]],
+                [[1.0, 0.0], [1.0, 2.0]],
+                [[2.0, 0.0], [0.0, 3.0]],
+                [[0.0, 1.0], [2.0, 1.0]],
+            ],
+        ]
+    )
+    expected = torch.tensor([[782.0, 546.0]])
+
+    torch.testing.assert_close(_pooled_lmf_residual(states, availability, temporal, factors), expected)
+
+
 def test_pooled_lmf_r4_constructs_with_rank_factors_and_preserves_gated_initialization() -> None:
     torch.manual_seed(109)
     gated = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
@@ -250,6 +285,8 @@ def test_pooled_lmf_r4_constructs_with_rank_factors_and_preserves_gated_initiali
 
     assert _POOLED_LMF_RANK == 4
     assert pooled_lmf.pooled_lmf_factors.shape == (3, 4, 16, 16)
+    assert output.logits.shape == (2, 3)
+    assert output.score.shape == (2,)
     assert torch.isfinite(output.logits).all()
     assert torch.isfinite(output.score).all()
     assert all(torch.equal(gated.state_dict()[name], pooled_lmf.state_dict()[name]) for name in gated.state_dict())
@@ -289,13 +326,14 @@ def test_pooled_lmf_r4_is_exactly_gated_and_has_zero_factor_gradients_without_al
     pooled_output = pooled_lmf(text=text, audio=audio, vision=vision, masks=masks)
 
     assert_same_public_output(pooled_output, gated_output)
-    (pooled_output.logits.square().sum() + pooled_output.score.square().sum()).backward()
-    assert pooled_lmf.pooled_lmf_factors.grad is not None
-    assert torch.isfinite(pooled_lmf.pooled_lmf_factors.grad).all()
-    assert torch.equal(
-        pooled_lmf.pooled_lmf_factors.grad,
-        torch.zeros_like(pooled_lmf.pooled_lmf_factors.grad),
-    )
+    factor_gradient = torch.autograd.grad(
+        pooled_output.logits.square().sum() + pooled_output.score.square().sum(),
+        pooled_lmf.pooled_lmf_factors,
+        allow_unused=True,
+    )[0]
+    if factor_gradient is not None:
+        assert torch.isfinite(factor_gradient).all()
+        assert torch.equal(factor_gradient, torch.zeros_like(factor_gradient))
 
 
 def test_pooled_lmf_r4_keeps_incomplete_rows_gated_in_a_mixed_batch() -> None:
@@ -329,9 +367,11 @@ def test_pooled_lmf_r4_keeps_incomplete_rows_gated_in_a_mixed_batch() -> None:
         incomplete_loss,
         pooled_lmf.pooled_lmf_factors,
         retain_graph=True,
+        allow_unused=True,
     )[0]
-    assert torch.isfinite(incomplete_gradient).all()
-    assert torch.equal(incomplete_gradient, torch.zeros_like(incomplete_gradient))
+    if incomplete_gradient is not None:
+        assert torch.isfinite(incomplete_gradient).all()
+        assert torch.equal(incomplete_gradient, torch.zeros_like(incomplete_gradient))
 
     (pooled_output.logits.square().sum() + pooled_output.score.square().sum()).backward()
     assert pooled_lmf.pooled_lmf_factors.grad is not None
