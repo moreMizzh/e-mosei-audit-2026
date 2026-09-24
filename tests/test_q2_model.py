@@ -22,6 +22,35 @@ class FakeBert(nn.Module):
         return SimpleNamespace(last_hidden_state=torch.ones(input_ids.shape[0], input_ids.shape[1], 768))
 
 
+class RecordingAttention(nn.Module):
+    """Delegate to real attention while recording the mask passed to it."""
+
+    def __init__(self, delegate: nn.MultiheadAttention) -> None:
+        super().__init__()
+        self.delegate = delegate
+        self.key_padding_masks: list[torch.Tensor] = []
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        *,
+        key_padding_mask: torch.Tensor | None = None,
+        need_weights: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if key_padding_mask is None:
+            raise AssertionError("MulT-lite must pass key_padding_mask")
+        self.key_padding_masks.append(key_padding_mask.detach().clone())
+        return self.delegate(
+            query,
+            key,
+            value,
+            key_padding_mask=key_padding_mask,
+            need_weights=need_weights,
+        )
+
+
 def example_masks(*, audio_available: bool = True) -> TensorMasks:
     batch_size, positions = 2, 50
     temporal = torch.ones(batch_size, positions, dtype=torch.bool)
@@ -185,6 +214,64 @@ def test_mult_lite_skips_all_missing_nonverbal_keys_and_values() -> None:
     assert torch.equal(changed.score, baseline.score)
     assert torch.equal(changed.gates, baseline.gates)
     assert torch.equal(changed.temporal_attention, baseline.temporal_attention)
+
+
+def test_mult_lite_partial_masks_isolate_raw_values_and_preserve_attention_gradients() -> None:
+    torch.manual_seed(29)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16, heads=4, layers=1, dropout=0.0, fusion_variant="mult_lite"
+    )
+    audio_attention = RecordingAttention(model.text_from_audio)
+    vision_attention = RecordingAttention(model.text_from_vision)
+    model.text_from_audio = audio_attention
+    model.text_from_vision = vision_attention
+
+    temporal = torch.ones(2, 50, dtype=torch.bool)
+    text_available = temporal.clone()
+    text_available[0, [3, 11]] = False
+    audio_available = temporal.clone()
+    audio_available[0, [1, 5, 17]] = False
+    audio_available[1] = False
+    vision_available = temporal.clone()
+    vision_available[0, [2, 8, 23]] = False
+    vision_available[1] = False
+    masks = TensorMasks(
+        text=text_available,
+        audio=audio_available,
+        vision=vision_available,
+        temporal=temporal,
+    )
+    text = torch.randn(2, 50, 768).masked_fill(~text_available.unsqueeze(-1), 0.0)
+    audio = torch.randn(2, 50, 74).masked_fill(~audio_available.unsqueeze(-1), 0.0)
+    vision = torch.randn(2, 50, 35).masked_fill(~vision_available.unsqueeze(-1), 0.0)
+    changed_text = text.masked_fill(~text_available.unsqueeze(-1), 1_000_000.0)
+    changed_audio = audio.masked_fill(~audio_available.unsqueeze(-1), 1_000_000.0)
+    changed_vision = vision.masked_fill(~vision_available.unsqueeze(-1), 1_000_000.0)
+
+    model.eval()
+    with torch.no_grad():
+        baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+        changed = model(text=changed_text, audio=changed_audio, vision=changed_vision, masks=masks)
+
+    assert torch.equal(changed.logits, baseline.logits)
+    assert torch.equal(changed.score, baseline.score)
+    assert torch.equal(changed.gates, baseline.gates)
+    assert torch.equal(changed.temporal_attention, baseline.temporal_attention)
+    expected_audio_mask = ~audio_available[0:1]
+    expected_vision_mask = ~vision_available[0:1]
+    assert len(audio_attention.key_padding_masks) == 2
+    assert len(vision_attention.key_padding_masks) == 2
+    assert all(torch.equal(mask, expected_audio_mask) for mask in audio_attention.key_padding_masks)
+    assert all(torch.equal(mask, expected_vision_mask) for mask in vision_attention.key_padding_masks)
+
+    model.zero_grad()
+    output = model(text=text, audio=audio, vision=vision, masks=masks)
+    (output.logits.square().mean() + output.score.square().mean()).backward()
+
+    for attention in (audio_attention, vision_attention):
+        gradients = [parameter.grad for parameter in attention.parameters()]
+        assert all(gradient is not None and torch.isfinite(gradient).all() for gradient in gradients)
+        assert sum(gradient.abs().sum() for gradient in gradients if gradient is not None) > 0
 
 
 def test_mask_aware_fusion_rejects_unsupported_fusion_variant() -> None:
