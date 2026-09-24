@@ -78,6 +78,123 @@ def test_mask_aware_fusion_returns_three_logits_and_bounded_score() -> None:
     assert torch.all(output.score >= -3)
 
 
+def test_houlsby_output_adapter_returns_finite_bounded_predictions_and_weights() -> None:
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        text_adapter_variant="houlsby_output_b32",
+    )
+
+    output = model(
+        text=torch.randn(2, 50, 768),
+        audio=torch.randn(2, 50, 74),
+        vision=torch.randn(2, 50, 35),
+        masks=example_masks(),
+    )
+
+    assert model.text_adapter_down.weight.shape == (32, 768)
+    assert model.text_adapter_up.weight.shape == (768, 32)
+    assert output.logits.shape == (2, 3)
+    assert output.score.shape == (2,)
+    assert output.gates.shape == (2, 50, 3)
+    assert output.temporal_attention.shape == (2, 50)
+    assert torch.isfinite(output.logits).all()
+    assert torch.isfinite(output.score).all()
+    assert torch.isfinite(output.gates).all()
+    assert torch.isfinite(output.temporal_attention).all()
+    assert torch.all(output.score <= 3)
+    assert torch.all(output.score >= -3)
+
+
+def test_houlsby_output_adapter_ignores_raw_text_when_text_is_unavailable() -> None:
+    torch.manual_seed(31)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        text_adapter_variant="houlsby_output_b32",
+    ).eval()
+    temporal = torch.ones(2, 50, dtype=torch.bool)
+    text_available = temporal.clone()
+    text_available[0, [3, 11]] = False
+    text_available[1, [5, 19]] = False
+    masks = TensorMasks(
+        text=text_available,
+        audio=temporal.clone(),
+        vision=temporal.clone(),
+        temporal=temporal,
+    )
+    text = torch.randn(2, 50, 768).masked_fill(~text_available.unsqueeze(-1), 0.0)
+    changed_text = text.masked_fill(~text_available.unsqueeze(-1), 1_000_000.0)
+    audio = torch.randn(2, 50, 74)
+    vision = torch.randn(2, 50, 35)
+
+    baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+    changed = model(text=changed_text, audio=audio, vision=vision, masks=masks)
+
+    assert torch.equal(changed.logits, baseline.logits)
+    assert torch.equal(changed.score, baseline.score)
+    assert torch.equal(changed.gates, baseline.gates)
+    assert torch.equal(changed.temporal_attention, baseline.temporal_attention)
+
+
+def test_houlsby_output_adapter_linear_weights_receive_finite_nonzero_gradients() -> None:
+    torch.manual_seed(37)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        text_adapter_variant="houlsby_output_b32",
+    )
+
+    output = model(
+        text=torch.randn(2, 50, 768),
+        audio=torch.randn(2, 50, 74),
+        vision=torch.randn(2, 50, 35),
+        masks=example_masks(),
+    )
+    (output.logits.square().sum() + output.score.square().sum()).backward()
+
+    for layer in (model.text_adapter_down, model.text_adapter_up):
+        assert layer.weight.grad is not None
+        assert torch.isfinite(layer.weight.grad).all()
+        assert layer.weight.grad.abs().sum() > 0
+
+
+def test_houlsby_output_adapter_preserves_common_initialization_and_cpu_rng() -> None:
+    torch.manual_seed(41)
+    identity = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
+    identity_next = torch.rand(4)
+
+    torch.manual_seed(41)
+    adapter = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        text_adapter_variant="houlsby_output_b32",
+    )
+    adapter_next = torch.rand(4)
+
+    assert not hasattr(identity, "text_adapter_down")
+    assert not hasattr(identity, "text_adapter_up")
+    common = set(identity.state_dict()) & set(adapter.state_dict())
+    assert all(torch.equal(identity.state_dict()[name], adapter.state_dict()[name]) for name in common)
+    assert torch.equal(identity_next, adapter_next)
+
+
+def test_mask_aware_fusion_rejects_unsupported_text_adapter_variant() -> None:
+    with pytest.raises(
+        ValueError,
+        match="text_adapter_variant must be one of: identity, houlsby_output_b32",
+    ):
+        MaskAwareTemporalFusion(text_adapter_variant="unsupported")
+
+
 def test_gate_assigns_zero_weight_to_an_unavailable_modality() -> None:
     model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
 

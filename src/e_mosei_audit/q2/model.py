@@ -9,7 +9,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from e_mosei_audit.q2.config import validate_fusion_variant
+from e_mosei_audit.q2.config import validate_fusion_variant, validate_text_adapter_variant
 
 
 @dataclass(frozen=True)
@@ -85,11 +85,13 @@ class MaskAwareTemporalFusion(nn.Module):
         layers: int = 2,
         dropout: float = 0.1,
         fusion_variant: str = "gated",
+        text_adapter_variant: str = "identity",
     ) -> None:
         super().__init__()
         if hidden_size < 1 or heads < 1 or layers < 1 or hidden_size % heads:
             raise ValueError("hidden_size must be positive, layers/heads positive, and hidden_size divisible by heads")
         self.fusion_variant = validate_fusion_variant(fusion_variant)
+        self.text_adapter_variant = validate_text_adapter_variant(text_adapter_variant)
         self.text_projection = _projection(768, hidden_size)
         self.audio_projection = _projection(74, hidden_size)
         self.vision_projection = _projection(35, hidden_size)
@@ -118,11 +120,28 @@ class MaskAwareTemporalFusion(nn.Module):
         self.pool_attention = nn.Linear(hidden_size, 1)
         self.classifier = nn.Sequential(nn.LayerNorm(hidden_size + 3), nn.Linear(hidden_size + 3, 3))
         self.regressor = nn.Sequential(nn.LayerNorm(hidden_size + 3), nn.Linear(hidden_size + 3, 1))
+        if self.text_adapter_variant == "houlsby_output_b32":
+            rng_state = torch.get_rng_state()
+            try:
+                self.text_adapter_down = nn.Linear(768, 32)
+                self.text_adapter_up = nn.Linear(32, 768)
+                nn.init.trunc_normal_(self.text_adapter_down.weight, mean=0.0, std=0.01, a=-0.02, b=0.02)
+                nn.init.zeros_(self.text_adapter_down.bias)
+                nn.init.trunc_normal_(self.text_adapter_up.weight, mean=0.0, std=0.01, a=-0.02, b=0.02)
+                nn.init.zeros_(self.text_adapter_up.bias)
+            finally:
+                torch.set_rng_state(rng_state)
 
     def forward(self, *, text: torch.Tensor, audio: torch.Tensor, vision: torch.Tensor, masks: TensorMasks) -> Q2Output:
         """Return joint predictions while applying masks before fusion and pooling."""
 
         _validate_inputs(text, audio, vision, masks)
+        if self.text_adapter_variant == "houlsby_output_b32":
+            text_mask = masks.text.unsqueeze(-1)
+            masked_text = text.masked_fill(~text_mask, 0.0)
+            delta = self.text_adapter_up(torch.relu(self.text_adapter_down(masked_text)))
+            delta = delta.masked_fill(~text_mask, 0.0)
+            text = (masked_text + delta).masked_fill(~text_mask, 0.0)
         availability = torch.stack((masks.text, masks.audio, masks.vision), dim=-1)
         projected_states = (
             self.text_projection(text),
