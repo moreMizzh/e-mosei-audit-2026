@@ -197,6 +197,7 @@ def _q2_config(tmp_path: Path) -> Q2Config:
         layers=1,
         dropout=0.0,
         regression_loss_weight=0.5,
+        polarity_consistency_loss_weight=0.0,
         class_weight_exponent=1.0,
         synthetic_missingness_enabled=True,
         device="cpu",

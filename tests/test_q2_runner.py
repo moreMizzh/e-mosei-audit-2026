@@ -45,7 +45,42 @@ def test_joint_loss_applies_configured_regression_weight() -> None:
     expected = torch.nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
     expected += 0.25 * torch.nn.functional.smooth_l1_loss(output.score, scores)
 
-    actual = _joint_loss(output, labels, scores, class_weights, regression_loss_weight=0.25)
+    actual = _joint_loss(
+        output,
+        labels,
+        scores,
+        class_weights,
+        regression_loss_weight=0.25,
+        polarity_consistency_loss_weight=0.0,
+    )
+
+    assert torch.allclose(actual, expected)
+
+
+def test_joint_loss_applies_configured_polarity_consistency_weight() -> None:
+    output = Q2Output(
+        logits=torch.tensor([[1.0, 0.0, -1.0], [0.0, 1.0, -1.0]]),
+        score=torch.tensor([0.5, -0.25]),
+        gates=torch.empty(0),
+        temporal_attention=torch.empty(0),
+    )
+    labels = torch.tensor([0, 1])
+    scores = torch.tensor([0.0, -1.0])
+    class_weights = torch.tensor([1.0, 2.0, 1.0])
+    expected = torch.nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
+    expected += 0.25 * torch.nn.functional.smooth_l1_loss(output.score, scores)
+    probabilities = torch.softmax(output.logits, dim=1)
+    expected_polarity = probabilities @ torch.tensor([-1.0, 0.0, 1.0])
+    expected += 0.10 * torch.nn.functional.smooth_l1_loss(output.score / 3.0, expected_polarity)
+
+    actual = _joint_loss(
+        output,
+        labels,
+        scores,
+        class_weights,
+        regression_loss_weight=0.25,
+        polarity_consistency_loss_weight=0.10,
+    )
 
     assert torch.allclose(actual, expected)
 
@@ -196,6 +231,7 @@ def runner_config(tmp_path: Path) -> Q2Config:
         layers=1,
         dropout=0.0,
         regression_loss_weight=0.5,
+        polarity_consistency_loss_weight=0.0,
         class_weight_exponent=1.0,
         synthetic_missingness_enabled=True,
         device="cpu",
@@ -231,6 +267,7 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     assert len(scenarios) == 27
     assert set(metrics["clean"]) == {"accuracy", "macro_f1", "mae", "pearson"}
     assert manifest["training"]["regression_loss_weight"] == 0.5
+    assert manifest["training"]["polarity_consistency_loss_weight"] == 0.0
     assert manifest["training"]["class_weight_exponent"] == 1.0
     assert manifest["training"]["synthetic_missingness"]["enabled"] is True
     assert classification["confusion_matrix"]["labels"] == ["Negative", "Neutral", "Positive"]
@@ -271,6 +308,34 @@ def test_run_q2_forwards_configured_regression_loss_weight_to_training(monkeypat
     run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
 
     assert observed_weights == [0.25]
+
+
+def test_run_q2_forwards_configured_polarity_consistency_loss_weight_to_training(monkeypatch, tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a training or validation input"},
+        }
+    }
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+    observed_weights: list[float] = []
+    original_joint_loss = q2_runner._joint_loss
+
+    def recording_joint_loss(*args, **kwargs):
+        observed_weights.append(kwargs["polarity_consistency_loss_weight"])
+        return original_joint_loss(*args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "_joint_loss", recording_joint_loss)
+    config = replace(runner_config(tmp_path), polarity_consistency_loss_weight=0.10)
+
+    run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
+
+    assert observed_weights == [0.10]
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["training"]["polarity_consistency_loss_weight"] == 0.10
 
 
 def test_run_q2_skips_training_synthetic_missingness_when_disabled(monkeypatch, tmp_path: Path) -> None:

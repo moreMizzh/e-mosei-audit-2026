@@ -22,6 +22,7 @@ _TRAINING_FIELDS = (
     "layers",
     "dropout",
     "regression_loss_weight",
+    "polarity_consistency_loss_weight",
     "class_weight_exponent",
     "synthetic_missingness_enabled",
     "device",
@@ -44,6 +45,7 @@ class Q2Config:
     layers: int
     dropout: float
     regression_loss_weight: float
+    polarity_consistency_loss_weight: float
     class_weight_exponent: float
     synthetic_missingness_enabled: bool
     device: str
@@ -84,6 +86,7 @@ def load_q2_config(path: Path) -> Q2Config:
         layers=values["layers"],
         dropout=float(values["dropout"]),
         regression_loss_weight=float(values["regression_loss_weight"]),
+        polarity_consistency_loss_weight=float(values["polarity_consistency_loss_weight"]),
         class_weight_exponent=float(values["class_weight_exponent"]),
         synthetic_missingness_enabled=values["synthetic_missingness_enabled"],
         device=values["device"],
@@ -150,6 +153,14 @@ def _validate_training(values: Mapping[str, object]) -> None:
         or regression_loss_weight < 0
     ):
         raise ValueError("regression_loss_weight is outside its valid range")
+    polarity_consistency_loss_weight = values["polarity_consistency_loss_weight"]
+    if (
+        isinstance(polarity_consistency_loss_weight, bool)
+        or not isinstance(polarity_consistency_loss_weight, (int, float))
+        or not math.isfinite(float(polarity_consistency_loss_weight))
+        or polarity_consistency_loss_weight < 0
+    ):
+        raise ValueError("polarity_consistency_loss_weight is outside its valid range")
     class_weight_exponent = values["class_weight_exponent"]
     if (
         isinstance(class_weight_exponent, bool)

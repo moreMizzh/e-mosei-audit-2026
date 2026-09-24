@@ -34,6 +34,7 @@ heads = 4
 layers = 1
 dropout = 0.0
 regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
 class_weight_exponent = 1.0
 synthetic_missingness_enabled = true
 device = "cpu"
@@ -48,6 +49,7 @@ device = "cpu"
     assert config.output_dir == tmp_path / "artifacts" / "q2"
     assert config.epochs == 3
     assert config.regression_loss_weight == 0.5
+    assert config.polarity_consistency_loss_weight == 0.0
     assert config.class_weight_exponent == 1.0
     assert config.synthetic_missingness_enabled is True
     assert config.device == "cpu"
@@ -86,6 +88,7 @@ heads = 4
 layers = 1
 dropout = 0.0
 regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
 class_weight_exponent = 1.0
 synthetic_missingness_enabled = {value}
 device = "cpu"
@@ -107,6 +110,16 @@ device = "cpu"
         ("weight_decay", "nan", "weight_decay must be finite"),
         ("regression_loss_weight", "nan", "regression_loss_weight is outside its valid range"),
         ("regression_loss_weight", "-0.1", "regression_loss_weight is outside its valid range"),
+        (
+            "polarity_consistency_loss_weight",
+            "nan",
+            "polarity_consistency_loss_weight is outside its valid range",
+        ),
+        (
+            "polarity_consistency_loss_weight",
+            "-0.1",
+            "polarity_consistency_loss_weight is outside its valid range",
+        ),
         ("class_weight_exponent", "0.0", "class_weight_exponent is outside its valid range"),
         ("class_weight_exponent", "-1.0", "class_weight_exponent is outside its valid range"),
         ("class_weight_exponent", "nan", "class_weight_exponent is outside its valid range"),
@@ -141,6 +154,7 @@ heads = 4
 layers = 1
 dropout = 0.0
 regression_loss_weight = {value if field == "regression_loss_weight" else "0.5"}
+polarity_consistency_loss_weight = {value if field == "polarity_consistency_loss_weight" else "0.0"}
 class_weight_exponent = {value if field == "class_weight_exponent" else "1.0"}
 synthetic_missingness_enabled = true
 device = "cpu"
@@ -180,6 +194,7 @@ heads = 4
 layers = 1
 dropout = 0.0
 regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
 class_weight_exponent = 1.0
 synthetic_missingness_enabled = true
 device = "cpu"

@@ -15,6 +15,7 @@ heads = 4
 layers = 2
 dropout = 0.1
 regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
 class_weight_exponent = 1.0
 synthetic_missingness_enabled = true
 device = "cuda"

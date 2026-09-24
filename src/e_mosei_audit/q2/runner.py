@@ -210,6 +210,7 @@ def run_q2(
             batch_size=config.batch_size,
             class_weights=weights,
             regression_loss_weight=config.regression_loss_weight,
+            polarity_consistency_loss_weight=config.polarity_consistency_loss_weight,
             synthetic_missingness_enabled=config.synthetic_missingness_enabled,
             rng=generator,
             device=device,
@@ -447,6 +448,7 @@ def _train_epoch(
     batch_size: int,
     class_weights: torch.Tensor,
     regression_loss_weight: float,
+    polarity_consistency_loss_weight: float,
     synthetic_missingness_enabled: bool,
     rng: np.random.Generator,
     device: torch.device,
@@ -467,6 +469,7 @@ def _train_epoch(
             scores,
             class_weights,
             regression_loss_weight=regression_loss_weight,
+            polarity_consistency_loss_weight=polarity_consistency_loss_weight,
         )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -480,10 +483,14 @@ def _joint_loss(
     class_weights: torch.Tensor,
     *,
     regression_loss_weight: float,
+    polarity_consistency_loss_weight: float,
 ) -> torch.Tensor:
     classification = nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
     regression = nn.functional.smooth_l1_loss(output.score, scores)
-    return classification + regression_loss_weight * regression
+    probabilities = torch.softmax(output.logits, dim=1)
+    expected_polarity = probabilities @ output.logits.new_tensor([-1.0, 0.0, 1.0])
+    consistency = nn.functional.smooth_l1_loss(output.score / 3.0, expected_polarity)
+    return classification + regression_loss_weight * regression + polarity_consistency_loss_weight * consistency
 
 
 def _evaluate(
@@ -687,6 +694,7 @@ def _write_run_outputs(
                     "layers": config.layers,
                     "dropout": config.dropout,
                     "regression_loss_weight": config.regression_loss_weight,
+                    "polarity_consistency_loss_weight": config.polarity_consistency_loss_weight,
                     "class_weight_exponent": config.class_weight_exponent,
                     "device": config.device,
                     "synthetic_missingness": {
