@@ -24,6 +24,7 @@ from e_mosei_audit.q2.config import (
     validate_classification_variant,
     validate_fusion_variant,
     validate_temporal_position_variant,
+    validate_temporal_pooling_variant,
     validate_text_adapter_variant,
 )
 from e_mosei_audit.q2.data import AlignedSplit, Attachment3Sample, load_aligned_train_valid, load_attachment3_aligned
@@ -196,6 +197,7 @@ def run_q2(
         dropout=config.dropout,
         fusion_variant=config.fusion_variant,
         temporal_position_variant=config.temporal_position_variant,
+        temporal_pooling_variant=config.temporal_pooling_variant,
         text_adapter_variant=config.text_adapter_variant,
         classification_variant=config.classification_variant,
     ).to(device)
@@ -327,6 +329,7 @@ def evaluate_saved_q2_valid(
         dropout=_manifest_dropout(training, "dropout"),
         fusion_variant=_manifest_fusion_variant(training),
         temporal_position_variant=_manifest_temporal_position_variant(training),
+        temporal_pooling_variant=_manifest_temporal_pooling_variant(training),
         text_adapter_variant=_manifest_text_adapter_variant(training),
         classification_variant=_manifest_classification_variant(training),
     ).to(device)
@@ -425,6 +428,14 @@ def _manifest_temporal_position_variant(training: Mapping[str, object]) -> str:
     if "temporal_position_variant" not in training:
         return "none"
     return validate_temporal_position_variant(training["temporal_position_variant"])
+
+
+def _manifest_temporal_pooling_variant(training: Mapping[str, object]) -> str:
+    """Treat historical saved runs as using the original temporal attention pooling."""
+
+    if "temporal_pooling_variant" not in training:
+        return "attention"
+    return validate_temporal_pooling_variant(training["temporal_pooling_variant"])
 
 
 def _manifest_text_adapter_variant(training: Mapping[str, object]) -> str:
@@ -772,6 +783,7 @@ def _write_run_outputs(
                 "text_adapter_variant": config.text_adapter_variant,
                 "classification_variant": config.classification_variant,
                 "temporal_position_variant": config.temporal_position_variant,
+                "temporal_pooling_variant": config.temporal_pooling_variant,
                 "device": config.device,
                 "synthetic_missingness": {
                     "enabled": config.synthetic_missingness_enabled,
