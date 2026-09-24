@@ -28,6 +28,7 @@
 | Gated A + pairwise Hadamard residual | `q2-valid-pairwise-hadamard-residual` | 0.631868 | 0.615855 | 0.624946 | 0.615701 | 1 | 淘汰：clean F1 未达硬门槛 |
 | Gated A + pooled LMF r4 | `q2-valid-pooled-lmf-r4` | 0.612637 | 0.600321 | 0.657110 | 0.588878 | 1 | 淘汰：clean F1、MAE 与缺失场景回退 |
 | Gated A + 固定正弦时间位置 | `q2-valid-sinusoidal-temporal-position` | 0.604396 | 0.581915 | 0.637771 | 0.592128 | 12 | 淘汰：clean F1、三类 F1 与缺失场景回退 |
+| Gated A + 可用性条件时间池化 | `q2-valid-attention-availability` | 0.637363 | 0.614853 | 0.621444 | 0.617177 | 1 | 淘汰：clean F1 未达硬门槛 |
 
 ### Test
 
@@ -53,6 +54,7 @@
 | Gated A + pairwise Hadamard residual | `q2-valid-pairwise-hadamard-residual` | - | - | - | - | 未评估 |
 | Gated A + pooled LMF r4 | `q2-valid-pooled-lmf-r4` | - | - | - | - | 未评估 |
 | Gated A + 固定正弦时间位置 | `q2-valid-sinusoidal-temporal-position` | - | - | - | - | 未评估 |
+| Gated A + 可用性条件时间池化 | `q2-valid-attention-availability` | - | - | - | - | 未评估 |
 
 `Gated v4` 的 test 行来自模型冻结后的单次后验评估：checkpoint 先按附件 2 `valid` 的 macro-F1、再按 MAE 选定，之后仅对 727 条 `test` 样本推理，没有重训、调参或再次选模。其余候选均未评估；在当前探索期不得为了补全此表而运行 test，更不能将 valid 数值复制为 test 数值。
 

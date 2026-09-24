@@ -154,7 +154,7 @@ Expected: all runner/CLI tests pass and test-split sentinels remain unaccessed.
 - Modify: README.md
 - Modify: docs/superpowers/specs/2026-09-24-q2-exploration-portfolio.md
 
-- [ ] **Step 1: Run full regression verification**
+- [x] **Step 1: Run full regression verification**
 
 Run:
 
@@ -164,11 +164,11 @@ Run:
 
 Expected: all non-opt-in tests pass, no whitespace errors, and only planned files differ.
 
-- [ ] **Step 2: Write the one-run configuration from A**
+- [x] **Step 2: Write the one-run configuration from A**
 
 Create /home/administrator/MyItem/E/q2-attention-availability.toml with A's paths and all A training values, output_dir=/home/administrator/MyItem/E/artifacts/q2-valid-attention-availability, temporal_position_variant="none", and temporal_pooling_variant="attention_availability". Retain seed 20260924, fusion_variant="gated", and synthetic_missingness_enabled=false.
 
-- [ ] **Step 3: Verify preflight and absent output**
+- [x] **Step 3: Verify preflight and absent output**
 
 Run:
 
@@ -177,7 +177,7 @@ Run:
 
 Expected: train_count=3395, valid_count=728, attachment3_count=30, with no output directory.
 
-- [ ] **Step 4: Run exactly once and reconstruct saved valid**
+- [x] **Step 4: Run exactly once and reconstruct saved valid**
 
 Run exactly once:
 
@@ -186,11 +186,11 @@ Run exactly once:
 
 Require exact saved/recomputed clean metrics, 728 valid rows, 27 scenario rows, 30 Attachment 3 predictions, manifest temporal_pooling_variant attention_availability, and no Attachment 2 test access.
 
-- [ ] **Step 5: Record acceptance or retirement without test**
+- [x] **Step 5: Record acceptance or retirement without test**
 
 Write an A/N comparison JSON, update matching README Val and unassessed Test rows, and append the portfolio result. Accept only macro-F1 >= 0.6212527658. On failure, retire only the exact zero-initialized, three-weight attention_availability variant without tuning initialization, scale, bias, activation, inputs, loss, optimizer, checkpoint, or seed.
 
-- [ ] **Step 6: Commit verified records**
+- [x] **Step 6: Commit verified records**
 
     git add README.md docs/superpowers/specs/2026-09-24-q2-exploration-portfolio.md
     git commit -m "docs: record Q2 availability pooling result"
