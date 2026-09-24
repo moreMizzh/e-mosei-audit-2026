@@ -247,11 +247,10 @@ class MaskAwareTemporalFusion(nn.Module):
             )
             representation = representation + text_anchor
         logits, ordinal_logits = self._classify(representation)
-        reported_gates = gates.masked_fill(~temporal.unsqueeze(-1), 0.0) if self.fusion_variant == "pooled_lmf_r4" else gates
         return Q2Output(
             logits=logits,
             score=3.0 * torch.tanh(self.regressor(representation).squeeze(-1)),
-            gates=reported_gates,
+            gates=gates,
             temporal_attention=temporal_attention,
             ordinal_logits=ordinal_logits,
         )
