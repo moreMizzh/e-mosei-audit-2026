@@ -117,11 +117,11 @@ Expected: all model tests pass.
 - Modify: src/e_mosei_audit/q2/runner.py
 - Modify: tests/test_q2_runner.py
 
-- [ ] **Step 1: Write failing runner tests**
+- [x] **Step 1: Write failing runner tests**
 
 Using the existing inaccessible-test payload, add an attention_availability config run test that asserts constructor propagation, a recorded training manifest field, 30 Attachment 3 rows, and zero forbidden test access. Add saved checkpoint tests showing strict reconstruction receives attention_availability when present and attention when absent from a historical manifest. Add an invalid manifest pooling variant rejection test.
 
-- [ ] **Step 2: Run runner tests to prove red**
+- [x] **Step 2: Run runner tests to prove red**
 
 Run:
 
@@ -129,11 +129,11 @@ Run:
 
 Expected: failures identify absent runner propagation or reconstruction semantics.
 
-- [ ] **Step 3: Implement runner propagation and fallback**
+- [x] **Step 3: Implement runner propagation and fallback**
 
 Pass config.temporal_pooling_variant in normal model construction. Persist the field in run_manifest training. Add _manifest_temporal_pooling_variant(training) returning attention only when the field is absent and otherwise calling validate_temporal_pooling_variant. Pass its result into saved-valid model construction, preserving strict=True state loading.
 
-- [ ] **Step 4: Verify runner suite is green**
+- [x] **Step 4: Verify runner suite is green**
 
 Run:
 
@@ -141,7 +141,7 @@ Run:
 
 Expected: all runner/CLI tests pass and test-split sentinels remain unaccessed.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
     git add src/e_mosei_audit/q2/runner.py tests/test_q2_runner.py
     git commit -m "feat: record Q2 temporal pooling artifacts"
