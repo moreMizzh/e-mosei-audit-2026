@@ -405,8 +405,10 @@ device = "cpu"
     assert load_q2_config(config_path).classification_variant == variant
 
 
-@pytest.mark.parametrize("variant", ["none", "rdrop_alpha_1"])
-def test_load_q2_config_parses_supported_dropout_consistency_variant(tmp_path: Path, variant: str) -> None:
+@pytest.mark.parametrize(("variant", "dropout"), [("none", "0.0"), ("rdrop_alpha_1", "0.1")])
+def test_load_q2_config_parses_supported_dropout_consistency_variant(
+    tmp_path: Path, variant: str, dropout: str
+) -> None:
     archive = tmp_path / "data.zip"
     archive.write_bytes(b"zip")
     seven_zip = tmp_path / "7za"
@@ -431,7 +433,7 @@ weight_decay = 0.01
 hidden_size = 16
 heads = 4
 layers = 1
-dropout = 0.0
+dropout = {dropout}
 regression_loss_weight = 0.5
 polarity_consistency_loss_weight = 0.0
 dropout_consistency_variant = "{variant}"
@@ -449,6 +451,52 @@ device = "cpu"
     )
 
     assert load_q2_config(config_path).dropout_consistency_variant == variant
+
+
+def test_load_q2_config_rejects_rdrop_without_dropout(tmp_path: Path) -> None:
+    archive = tmp_path / "data.zip"
+    archive.write_bytes(b"zip")
+    seven_zip = tmp_path / "7za"
+    seven_zip.write_bytes(b"tool")
+    seven_zip.chmod(0o755)
+    bert_model = tmp_path / "bert-base-uncased"
+    bert_model.mkdir()
+    config_path = tmp_path / "q2.toml"
+    config_path.write_text(
+        '''[paths]
+archive = "data.zip"
+seven_zip = "7za"
+bert_model = "bert-base-uncased"
+output_dir = "artifacts/q2"
+
+[training]
+seed = 7
+epochs = 3
+batch_size = 2
+learning_rate = 0.001
+weight_decay = 0.01
+hidden_size = 16
+heads = 4
+layers = 1
+dropout = 0.0
+regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
+dropout_consistency_variant = "rdrop_alpha_1"
+class_weight_exponent = 1.0
+synthetic_missingness_enabled = true
+fusion_variant = "gated"
+text_adapter_variant = "identity"
+classification_variant = "flat"
+temporal_position_variant = "none"
+temporal_pooling_variant = "attention"
+text_encoder_variant = "last_hidden_state"
+device = "cpu"
+''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"\Ardrop_alpha_1 requires dropout > 0\Z"):
+        load_q2_config(config_path)
 
 
 @pytest.mark.parametrize("value", ['"unsupported"', "1"])

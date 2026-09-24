@@ -213,6 +213,8 @@ def _validate_training(values: Mapping[str, object]) -> None:
     dropout_consistency_variant = validate_dropout_consistency_variant(values["dropout_consistency_variant"])
     if dropout_consistency_variant == "rdrop_alpha_1" and classification_variant != "flat":
         raise ValueError("rdrop_alpha_1 requires classification_variant=flat")
+    if dropout_consistency_variant == "rdrop_alpha_1" and values["dropout"] <= 0:
+        raise ValueError("rdrop_alpha_1 requires dropout > 0")
     validate_temporal_position_variant(values["temporal_position_variant"])
     validate_temporal_pooling_variant(values["temporal_pooling_variant"])
     validate_text_encoder_variant(values["text_encoder_variant"])
