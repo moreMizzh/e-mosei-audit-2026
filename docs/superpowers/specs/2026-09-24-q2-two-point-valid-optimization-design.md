@@ -29,6 +29,12 @@
 3. **类别权重指数（已淘汰）**：令类别权重为 `w_c(alpha) = n_c^(-alpha) * N / sum_j n_j^(1-alpha)`，令 `alpha=1.25`，输出 `artifacts/q2-valid-class-weight-125`。`alpha=1.0` 与原有 `N / (3*n_c)` 公式严格相同，归一化使每个训练样本的平均权重保持为 1。其 Neutral F1 与 macro-F1 都下降，停止该方向。
 4. **训练合成缺失（下一候选）**：关闭训练阶段随机连续模态缺失，仅保留原始可用性掩码；输出 `artifacts/q2-valid-no-train-missingness`。其余训练参数完全回到 v4，并保持验证场景和附件 3 推理的审计输出。理由是前三个参数方向均未改善 clean valid，而原始训练每个 batch 都人为遮蔽 1 至 2 个模态的 `10%` 至 `50%` 可用段，可能与当前 clean-only 目标冲突。
 
+## 第四候选结果
+
+- `synthetic_missingness_enabled=false` 的 clean valid macro-F1 为 `0.6165677806`，较 v4 提升 `0.0153150148`；accuracy 提升 `0.0274725275`，MAE 改善 `0.0033552051`。它尚差门槛 `0.0046849852`，故不宣称完成两点提升。
+- 27 个连续缺失场景的 mean macro-F1 从 `0.5889129309` 提升至 `0.6037955229`，最差场景从 `0.5409674554` 提升至 `0.5463436545`，未出现 clean/鲁棒性取舍。该候选可作为后续单变量处理的顺序对照。
+- 完整性审计为 valid `728` 条、场景 `27` 行、附件 3 预测 `30` 条，模型和清单均存在；归档、7-Zip、BERT、seed 与归一化统计和 v4 相同。比较记录：`artifacts/q2-valid-comparison-v4-no-train-missingness.json`。
+
 ## 实现与验证
 
 - `Q2Config` 增加必须显式指定的 `regression_loss_weight`，默认示例配置写 `0.5` 以保持基线语义；配置要求其为有限非负数。
