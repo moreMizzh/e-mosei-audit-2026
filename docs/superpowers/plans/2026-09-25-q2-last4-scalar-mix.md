@@ -175,7 +175,7 @@ Expected: runner and CLI tests pass, fake test sentinels remain unread, and save
 - Modify: `docs/superpowers/specs/2026-09-24-q2-exploration-portfolio.md`
 - Modify: `docs/superpowers/plans/2026-09-25-q2-last4-scalar-mix.md`
 
-- [ ] **Step 1: Run the full regression gate**
+- [x] **Step 1: Run the full regression gate**
 
 Run:
 
@@ -185,7 +185,7 @@ Run:
 
 Expected: all non-opt-in tests pass, no whitespace errors, and the target output directory does not exist.
 
-- [ ] **Step 2: Create the one-run A-derived configuration**
+- [x] **Step 2: Create the one-run A-derived configuration**
 
 Create the ignored `/home/administrator/MyItem/E/q2-last4-scalar-mix.toml` with A's archive, 7-Zip, local BERT paths, and every A training value. Set only:
 
@@ -196,7 +196,7 @@ text_encoder_variant = "last4_scalar_mix"
 
 Retain `seed=20260924`, `fusion_variant="gated"`, `text_adapter_variant="identity"`, `classification_variant="flat"`, `temporal_position_variant="none"`, `temporal_pooling_variant="attention"`, and `synthetic_missingness_enabled=false`.
 
-- [ ] **Step 3: Prove preflight and output absence**
+- [x] **Step 3: Prove preflight and output absence**
 
 Run:
 
@@ -206,7 +206,7 @@ Run:
 
 Expected JSON is `{"attachment3_count": 30, "train_count": 3395, "valid_count": 728}` and no output directory.
 
-- [ ] **Step 4: Run exactly once and strictly reconstruct valid**
+- [x] **Step 4: Run exactly once and strictly reconstruct valid**
 
 Run exactly once:
 
@@ -215,11 +215,11 @@ Run exactly once:
 
 Require exact saved/recomputed metrics, valid report support total 728, 27 scenario rows, 30 Attachment 3 predictions, nonempty `model.pt`, an encoder state with exactly `layer_logits` and `scale`, and manifest `text_encoder_variant="last4_scalar_mix"`. Do not run or create a test evaluation.
 
-- [ ] **Step 5: Record the acceptance decision without test**
+- [x] **Step 5: Record the acceptance decision without test**
 
 Create the ignored A/O comparison JSON with clean metrics, per-class F1, scenario mean/worst, metric deltas, architecture `{last_four_layers: true, trainable_parameter_increment: 5}`, exact artifact checks, normalized manifest difference, and explicit train/valid-only scope. Update the top README Val row and a Test `未评估` row plus the exploration portfolio. Accept only clean valid macro-F1 `>= 0.6212527658`; otherwise retire this exact four-layer, zero-logit, unit-scale mix without tuning layer count, initialization, scale parameterization, BERT freeze/mode, optimizer, loss, checkpoint, seed, or b32 combination.
 
-- [ ] **Step 6: Commit verified documentation**
+- [x] **Step 6: Commit verified documentation**
 
     git add README.md docs/superpowers/specs/2026-09-24-q2-exploration-portfolio.md docs/superpowers/plans/2026-09-25-q2-last4-scalar-mix.md
     git commit -m "docs: record Q2 last-four scalar mix result"
