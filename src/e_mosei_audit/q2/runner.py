@@ -211,6 +211,7 @@ def run_q2(
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
     )
+    _encoder_trainable_state(active_encoder, config.text_encoder_variant)
     weights = _class_weights(
         dataset.train.classification_labels,
         device,
