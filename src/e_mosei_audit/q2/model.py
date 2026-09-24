@@ -16,6 +16,9 @@ from e_mosei_audit.q2.config import (
 )
 
 
+_POOLED_LMF_RANK = 4
+
+
 @dataclass(frozen=True)
 class TensorMasks:
     """Boolean availability masks on the same device as model inputs."""
@@ -142,6 +145,11 @@ class MaskAwareTemporalFusion(nn.Module):
                 nn.init.zeros_(self.text_adapter_up.bias)
             finally:
                 torch.set_rng_state(rng_state)
+        if self.fusion_variant == "pooled_lmf_r4":
+            self.pooled_lmf_factors = nn.Parameter(torch.empty(3, _POOLED_LMF_RANK, hidden_size, hidden_size))
+            for modality_index in range(3):
+                for rank_index in range(_POOLED_LMF_RANK):
+                    nn.init.xavier_uniform_(self.pooled_lmf_factors[modality_index, rank_index])
 
     def forward(self, *, text: torch.Tensor, audio: torch.Tensor, vision: torch.Tensor, masks: TensorMasks) -> Q2Output:
         """Return joint predictions while applying masks before fusion and pooling."""
@@ -220,6 +228,12 @@ class MaskAwareTemporalFusion(nn.Module):
         attention_logits = self.pool_attention(encoded).squeeze(-1).masked_fill(~temporal, float("-inf"))
         temporal_attention = torch.softmax(attention_logits, dim=1)
         pooled = torch.sum(temporal_attention.unsqueeze(-1) * encoded, dim=1)
+        if self.fusion_variant == "pooled_lmf_r4":
+            residual = _pooled_lmf_residual(states, availability, masks.temporal, self.pooled_lmf_factors)
+            complete_modalities = torch.stack(
+                tuple((masks.temporal & availability[..., index]).any(dim=1) for index in range(3)), dim=1
+            ).all(dim=1, keepdim=True)
+            pooled = torch.where(complete_modalities, pooled + residual, pooled)
         availability_fraction = (availability & temporal.unsqueeze(-1)).sum(dim=1).to(text.dtype)
         availability_fraction = availability_fraction / temporal.sum(dim=1, keepdim=True).to(text.dtype)
         representation = torch.cat((pooled, availability_fraction), dim=1)
@@ -233,10 +247,11 @@ class MaskAwareTemporalFusion(nn.Module):
             )
             representation = representation + text_anchor
         logits, ordinal_logits = self._classify(representation)
+        reported_gates = gates.masked_fill(~temporal.unsqueeze(-1), 0.0) if self.fusion_variant == "pooled_lmf_r4" else gates
         return Q2Output(
             logits=logits,
             score=3.0 * torch.tanh(self.regressor(representation).squeeze(-1)),
-            gates=gates,
+            gates=reported_gates,
             temporal_attention=temporal_attention,
             ordinal_logits=ordinal_logits,
         )
@@ -347,6 +362,32 @@ class MaskAwareTemporalFusion(nn.Module):
 
 def _projection(input_size: int, hidden_size: int) -> nn.Sequential:
     return nn.Sequential(nn.Linear(input_size, hidden_size), nn.LayerNorm(hidden_size), nn.GELU())
+
+
+def _pooled_lmf_residual(
+    states: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    availability: torch.Tensor,
+    temporal_mask: torch.Tensor,
+    factors: torch.Tensor,
+) -> torch.Tensor:
+    """Return a rankwise product of modality means when every modality is present."""
+
+    hidden_size = states[0].shape[-1]
+    if factors.shape != (3, _POOLED_LMF_RANK, hidden_size, hidden_size):
+        raise ValueError(f"factors must have shape [3, {_POOLED_LMF_RANK}, {hidden_size}, {hidden_size}]")
+    modality_masks = tuple(temporal_mask & availability[..., index] for index in range(3))
+    counts = torch.stack(tuple(mask.sum(dim=1) for mask in modality_masks), dim=1)
+    pooled = torch.stack(
+        tuple(
+            (state * mask.unsqueeze(-1)).sum(dim=1) / count.clamp_min(1).unsqueeze(-1)
+            for state, mask, count in zip(states, modality_masks, counts.unbind(dim=1), strict=True)
+        ),
+        dim=1,
+    )
+    rankwise = torch.einsum("bmd,mrdh->bmrh", pooled, factors)
+    residual = rankwise[:, 0] * rankwise[:, 1] * rankwise[:, 2]
+    residual = residual.sum(dim=1)
+    return torch.where(counts.gt(0).all(dim=1, keepdim=True), residual, torch.zeros_like(residual))
 
 
 def _pairwise_hadamard_residual(
