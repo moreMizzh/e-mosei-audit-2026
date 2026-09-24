@@ -69,13 +69,13 @@ Expected: all focused configuration consumers pass.
 - Modify: src/e_mosei_audit/q2/model.py
 - Modify: tests/test_q2_model.py
 
-- [ ] **Step 1: Write failing model tests**
+- [x] **Step 1: Write failing model tests**
 
 Create matched attention and attention_availability models using identical seed. Assert the availability variant has exactly three additional parameters and only pool_availability_bias.weight as an additional state key; all shared parameter values and successor RNG values are identical. With zero bias, exact logits, score, gates, and temporal attention must equal A.
 
 Use a recording pool bias to assert it receives only float availability shaped [B,T,3]. Add tests that all-invalid/padded slots retain zero attention, unavailable raw values remain inert, appended fully unavailable padding stays zero with existing narrow numerical tolerance only for cross-shape valid prefixes, and the three availability weights receive finite nonzero gradient in varied-availability batches.
 
-- [ ] **Step 2: Run model suite to prove red**
+- [x] **Step 2: Run model suite to prove red**
 
 Run:
 
@@ -83,7 +83,7 @@ Run:
 
 Expected: collection or assertions fail because the pooling variant and availability bias do not exist.
 
-- [ ] **Step 3: Implement the minimal pooling path**
+- [x] **Step 3: Implement the minimal pooling path**
 
 Import validate_temporal_pooling_variant, accept temporal_pooling_variant: str = "attention" in the model constructor, and validate/store it. For attention_availability only, construct nn.Linear(3, 1, bias=False) after existing base modules inside a saved/restored torch RNG state, and set its weight to zero.
 
@@ -98,7 +98,7 @@ Replace only the attention-logit construction with:
 
 Do not change fusion, encoder, position feature, availability fraction, output heads, losses, optimizer, or late-expert path.
 
-- [ ] **Step 4: Verify model suite is green**
+- [x] **Step 4: Verify model suite is green**
 
 Run:
 
@@ -106,7 +106,7 @@ Run:
 
 Expected: all model tests pass.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
     git add src/e_mosei_audit/q2/model.py tests/test_q2_model.py
     git commit -m "feat: add Q2 availability-aware temporal pooling"
