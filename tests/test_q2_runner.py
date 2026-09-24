@@ -416,7 +416,7 @@ def test_run_q2_records_mag_lite_fusion_variant(tmp_path: Path) -> None:
     assert manifest["training"]["fusion_variant"] == "mag_lite"
 
 
-def test_run_q2_records_pairwise_hadamard_residual_without_test_split_access(tmp_path: Path) -> None:
+def test_run_q2_records_pairwise_hadamard_residual_without_test_split_access(monkeypatch, tmp_path: Path) -> None:
     aligned_payload = TrainValidPayloadWithInaccessibleTest(
         {
             "train": runner_split([0, 1, 2]),
@@ -438,6 +438,14 @@ def test_run_q2_records_pairwise_hadamard_residual_without_test_split_access(tmp
         output_dir=tmp_path / "q2-pairwise-hadamard-output",
         fusion_variant="pairwise_hadamard_residual",
     )
+    observed_variants: list[str] = []
+    original_model_constructor = q2_runner.MaskAwareTemporalFusion
+
+    def recording_model_constructor(*args, **kwargs):
+        observed_variants.append(kwargs["fusion_variant"])
+        return original_model_constructor(*args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", recording_model_constructor)
 
     summary = run_q2(config, archive=archive, token_encoder=TinyTokenEncoder())
 
@@ -448,6 +456,7 @@ def test_run_q2_records_pairwise_hadamard_residual_without_test_split_access(tmp
     assert len(predictions) == 30
     assert manifest["training"]["fusion_variant"] == "pairwise_hadamard_residual"
     assert archive.verify_count == 1
+    assert observed_variants == ["pairwise_hadamard_residual"]
 
 
 def test_run_q2_records_houlsby_text_adapter_variant_with_gated_fusion(tmp_path: Path) -> None:
