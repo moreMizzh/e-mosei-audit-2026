@@ -114,13 +114,13 @@ Expected: all model tests pass, including position, RNG, unavailable-value, and 
 - Modify: tests/test_q2_runner.py:360-520,1270-1381,1509-1561
 - Modify: tests/test_cli.py:184-240
 
-- [ ] **Step 1: Write failing runner and CLI tests**
+- [x] **Step 1: Write failing runner and CLI tests**
 
 Add a fake train/valid payload whose test lookup raises. In a temporal_position_variant="sinusoidal" run, assert run_manifest.json records the field and the model constructor receives it; assert archive verification is one and forbidden test lookup was never attempted.
 
 Create a saved sinusoidal checkpoint and manifest. Monkeypatch the constructor/load to assert temporal_position_variant == "sinusoidal" and strict is True. Create a historical manifest omitting the field and assert strict reconstruction receives none. Update each Q2 config test fixture and CLI fixture to include none.
 
-- [ ] **Step 2: Run runner tests to prove red**
+- [x] **Step 2: Run runner tests to prove red**
 
 Run:
 
@@ -128,11 +128,11 @@ Run:
 
 Expected: failure because run construction and saved-valid reconstruction lack the temporal-position field.
 
-- [ ] **Step 3: Implement runner propagation and legacy fallback**
+- [x] **Step 3: Implement runner propagation and legacy fallback**
 
 Pass config.temporal_position_variant from run_q2 into MaskAwareTemporalFusion and store it in manifest["training"]. In saved-valid reconstruction, call _manifest_temporal_position_variant(training), returning none if absent and otherwise invoking validate_temporal_position_variant; pass the result into the reconstructed model.
 
-- [ ] **Step 4: Verify runner/CLI tests pass**
+- [x] **Step 4: Verify runner/CLI tests pass**
 
 Run:
 
@@ -140,7 +140,7 @@ Run:
 
 Expected: all runner/CLI tests pass while test-split sentinels remain unaccessed.
 
-- [ ] **Step 5: Commit valid-only artifact behavior**
+- [x] **Step 5: Commit valid-only artifact behavior**
 
     git add src/e_mosei_audit/q2/runner.py tests/test_q2_runner.py tests/test_cli.py
     git commit -m "feat: record Q2 temporal position artifacts"
