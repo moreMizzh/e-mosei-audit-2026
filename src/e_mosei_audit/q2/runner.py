@@ -320,7 +320,7 @@ def evaluate_saved_q2_valid(
         fusion_variant=_manifest_fusion_variant(training),
         text_adapter_variant=_manifest_text_adapter_variant(training),
     ).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True), strict=True)
     valid_masks = observed_masks(dataset.valid.text_bert, dataset.valid.audio, dataset.valid.vision)
     metrics, predicted_classes, predicted_scores = _evaluate(
         model,

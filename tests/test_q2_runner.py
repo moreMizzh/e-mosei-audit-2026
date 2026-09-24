@@ -204,14 +204,18 @@ class RunnerArchive:
         yield BytesIO(self._contents[member_path])
 
 
-class InaccessibleTestSplit(dict[str, object]):
-    """Fail immediately if a valid-only flow inspects Attachment 2 test fields."""
+class TrainValidPayloadWithInaccessibleTest(dict[str, object]):
+    """Expose only train and valid when a valid-only flow reads an aligned payload."""
 
     def __getitem__(self, key: str) -> object:
-        raise AssertionError("Attachment 2 test split must not be accessed")
+        if key == "test":
+            raise AssertionError("Attachment 2 test split must not be accessed")
+        return super().__getitem__(key)
 
     def get(self, key: str, default: object = None) -> object:
-        raise AssertionError("Attachment 2 test split must not be accessed")
+        if key == "test":
+            raise AssertionError("Attachment 2 test split must not be accessed")
+        return super().get(key, default)
 
 
 class TinyTokenEncoder:
@@ -401,12 +405,19 @@ def test_run_q2_records_mult_lite_fusion_variant(tmp_path: Path) -> None:
 
 
 def test_run_q2_records_shared_late_expert_fusion_without_accessing_test(tmp_path: Path) -> None:
-    members: dict[str, object] = {
-        ALIGNED_50_MEMBER: {
+    aligned_payload = TrainValidPayloadWithInaccessibleTest(
+        {
             "train": runner_split([0, 1, 2]),
             "valid": runner_split([0, 1, 2]),
-            "test": InaccessibleTestSplit(),
+            "test": {"not": "an accessible Q2 runtime input"},
         }
+    )
+    with pytest.raises(AssertionError, match="Attachment 2 test split must not be accessed"):
+        aligned_payload["test"]
+    with pytest.raises(AssertionError, match="Attachment 2 test split must not be accessed"):
+        aligned_payload.get("test")
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: aligned_payload,
     }
     for index in range(1, 31):
         path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
@@ -850,12 +861,19 @@ def test_evaluate_saved_q2_valid_reconstructs_mult_lite_checkpoint(tmp_path: Pat
 
 
 def test_evaluate_saved_q2_valid_strictly_reconstructs_shared_late_expert_checkpoint(monkeypatch, tmp_path: Path) -> None:
-    members: dict[str, object] = {
-        ALIGNED_50_MEMBER: {
+    aligned_payload = TrainValidPayloadWithInaccessibleTest(
+        {
             "train": runner_split([0, 1, 2]),
             "valid": runner_split([0, 1, 2]),
-            "test": InaccessibleTestSplit(),
+            "test": {"not": "an accessible Q2 runtime input"},
         }
+    )
+    with pytest.raises(AssertionError, match="Attachment 2 test split must not be accessed"):
+        aligned_payload["test"]
+    with pytest.raises(AssertionError, match="Attachment 2 test split must not be accessed"):
+        aligned_payload.get("test")
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: aligned_payload,
     }
     archive = RunnerArchive(members)
     config = runner_config(tmp_path)
@@ -895,11 +913,10 @@ def test_evaluate_saved_q2_valid_strictly_reconstructs_shared_late_expert_checkp
         ),
         encoding="utf-8",
     )
-    observed_strict: list[bool] = []
     original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
 
     def recording_load_state_dict(self, *args, **kwargs):
-        observed_strict.append(kwargs.get("strict", True))
+        assert kwargs["strict"] is True
         return original_load_state_dict(self, *args, **kwargs)
 
     monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
@@ -914,7 +931,6 @@ def test_evaluate_saved_q2_valid_strictly_reconstructs_shared_late_expert_checkp
     assert report["sample_count"] == 3
     assert sum(sum(row) for row in report["confusion_matrix"]["counts"]) == 3
     assert archive.verify_count == 1
-    assert observed_strict == [True]
 
 
 def test_evaluate_saved_q2_valid_rejects_unsupported_manifest_fusion_variant(tmp_path: Path) -> None:
