@@ -6,7 +6,12 @@ import pytest
 import torch
 from torch import nn
 
-from e_mosei_audit.q2.model import FrozenBertEncoder, MaskAwareTemporalFusion, TensorMasks
+from e_mosei_audit.q2.model import (
+    FrozenBertEncoder,
+    MaskAwareTemporalFusion,
+    TensorMasks,
+    _pairwise_hadamard_residual,
+)
 
 
 class FakeBert(nn.Module):
@@ -157,6 +162,131 @@ def test_pairwise_hadamard_residual_fusion_constructs_and_returns_valid_predicti
     assert torch.isfinite(output.logits).all()
     assert torch.isfinite(output.score).all()
     assert torch.isin(output.logits.argmax(dim=1), torch.tensor([0, 1, 2])).all()
+
+
+def test_pairwise_hadamard_residual_averages_available_products_and_zeros_padding() -> None:
+    states = (
+        torch.tensor([[[2.0, 4.0], [2.0, 4.0], [2.0, 4.0], [2.0, 4.0]]]),
+        torch.tensor([[[3.0, 5.0], [3.0, 5.0], [3.0, 5.0], [3.0, 5.0]]]),
+        torch.tensor([[[7.0, 11.0], [7.0, 11.0], [7.0, 11.0], [7.0, 11.0]]]),
+    )
+    availability = torch.tensor([[[True, False, False], [True, True, False], [True, True, True], [True, True, True]]])
+    temporal = torch.tensor([[True, True, True, False]])
+    expected = torch.tensor([[[0.0, 0.0], [6.0, 20.0], [41.0 / 3.0, 119.0 / 3.0], [0.0, 0.0]]])
+
+    torch.testing.assert_close(_pairwise_hadamard_residual(states, availability, temporal), expected)
+
+
+def test_pairwise_hadamard_residual_changes_predictions_with_all_modalities() -> None:
+    torch.manual_seed(73)
+    gated = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+    pairwise = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="pairwise_hadamard_residual",
+    ).eval()
+    assert gated.state_dict().keys() == pairwise.state_dict().keys()
+    assert sum(parameter.numel() for parameter in gated.parameters()) == sum(
+        parameter.numel() for parameter in pairwise.parameters()
+    )
+    pairwise.load_state_dict(gated.state_dict(), strict=True)
+    masks = example_masks()
+    text = torch.randn(2, 50, 768)
+    audio = torch.randn(2, 50, 74)
+    vision = torch.randn(2, 50, 35)
+
+    with torch.no_grad():
+        gated_output = gated(text=text, audio=audio, vision=vision, masks=masks)
+        pairwise_output = pairwise(text=text, audio=audio, vision=vision, masks=masks)
+
+    assert not (
+        torch.equal(pairwise_output.logits, gated_output.logits)
+        and torch.equal(pairwise_output.score, gated_output.score)
+    )
+
+
+def test_pairwise_hadamard_residual_is_exactly_gated_with_text_only_rows() -> None:
+    torch.manual_seed(79)
+    gated = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+    pairwise = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="pairwise_hadamard_residual",
+    ).eval()
+    assert gated.state_dict().keys() == pairwise.state_dict().keys()
+    assert sum(parameter.numel() for parameter in gated.parameters()) == sum(
+        parameter.numel() for parameter in pairwise.parameters()
+    )
+    pairwise.load_state_dict(gated.state_dict(), strict=True)
+    temporal = torch.ones(2, 50, dtype=torch.bool)
+    masks = TensorMasks(
+        text=temporal.clone(),
+        audio=torch.zeros_like(temporal),
+        vision=torch.zeros_like(temporal),
+        temporal=temporal,
+    )
+    text = torch.randn(2, 50, 768)
+    audio = torch.randn(2, 50, 74)
+    vision = torch.randn(2, 50, 35)
+
+    with torch.no_grad():
+        gated_output = gated(text=text, audio=audio, vision=vision, masks=masks)
+        pairwise_output = pairwise(text=text, audio=audio, vision=vision, masks=masks)
+
+    assert torch.equal(pairwise_output.logits, gated_output.logits)
+    assert torch.equal(pairwise_output.score, gated_output.score)
+    assert torch.equal(pairwise_output.gates, gated_output.gates)
+    assert torch.equal(pairwise_output.temporal_attention, gated_output.temporal_attention)
+    assert pairwise_output.expert_weights is gated_output.expert_weights is None
+    assert pairwise_output.ordinal_logits is gated_output.ordinal_logits is None
+
+
+def test_pairwise_hadamard_residual_ignores_all_unavailable_raw_modality_values() -> None:
+    torch.manual_seed(83)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="pairwise_hadamard_residual",
+    ).eval()
+    temporal = torch.ones(2, 50, dtype=torch.bool)
+    text_available = temporal.clone()
+    text_available[0, [3, 11]] = False
+    text_available[1, [5, 19]] = False
+    audio_available = temporal.clone()
+    audio_available[0, [1, 5, 17]] = False
+    audio_available[1, [2, 8, 23]] = False
+    vision_available = temporal.clone()
+    vision_available[0, [2, 8, 23]] = False
+    vision_available[1, [1, 5, 17]] = False
+    masks = TensorMasks(
+        text=text_available,
+        audio=audio_available,
+        vision=vision_available,
+        temporal=temporal,
+    )
+    text = torch.randn(2, 50, 768)
+    audio = torch.randn(2, 50, 74)
+    vision = torch.randn(2, 50, 35)
+
+    with torch.no_grad():
+        baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+        changed = model(
+            text=text.masked_fill(~text_available.unsqueeze(-1), 1_000_000.0),
+            audio=audio.masked_fill(~audio_available.unsqueeze(-1), 1_000_000.0),
+            vision=vision.masked_fill(~vision_available.unsqueeze(-1), 1_000_000.0),
+            masks=masks,
+        )
+
+    assert torch.equal(changed.logits, baseline.logits)
+    assert torch.equal(changed.score, baseline.score)
+    assert torch.equal(changed.gates, baseline.gates)
+    assert torch.equal(changed.temporal_attention, baseline.temporal_attention)
 
 
 def test_text_anchor_residual_ignores_all_unavailable_raw_modality_values() -> None:

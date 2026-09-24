@@ -212,6 +212,8 @@ class MaskAwareTemporalFusion(nn.Module):
         gates = torch.where(any_available.unsqueeze(-1), gates, torch.zeros_like(gates))
         fused = sum(gates[..., index : index + 1] * state for index, state in enumerate(states))
         fused = fused.masked_fill(~temporal.unsqueeze(-1), 0.0)
+        if self.fusion_variant == "pairwise_hadamard_residual":
+            fused = fused + _pairwise_hadamard_residual(states, availability, masks.temporal)
 
         encoded = self.temporal_encoder(fused, src_key_padding_mask=~temporal)
         encoded = encoded.masked_fill(~temporal.unsqueeze(-1), 0.0)
@@ -345,6 +347,18 @@ class MaskAwareTemporalFusion(nn.Module):
 
 def _projection(input_size: int, hidden_size: int) -> nn.Sequential:
     return nn.Sequential(nn.Linear(input_size, hidden_size), nn.LayerNorm(hidden_size), nn.GELU())
+
+
+def _pairwise_hadamard_residual(states, availability, temporal_mask):
+    pair_masks = (
+        temporal_mask & availability[..., 0] & availability[..., 1],
+        temporal_mask & availability[..., 0] & availability[..., 2],
+        temporal_mask & availability[..., 1] & availability[..., 2],
+    )
+    pair_products = (states[0] * states[1], states[0] * states[2], states[1] * states[2])
+    residual = sum(mask.unsqueeze(-1) * product for mask, product in zip(pair_masks, pair_products, strict=True))
+    pair_count = sum(mask.to(dtype=states[0].dtype) for mask in pair_masks)
+    return residual / pair_count.clamp_min(1).unsqueeze(-1)
 
 
 def _validate_inputs(text: torch.Tensor, audio: torch.Tensor, vision: torch.Tensor, masks: TensorMasks) -> None:
