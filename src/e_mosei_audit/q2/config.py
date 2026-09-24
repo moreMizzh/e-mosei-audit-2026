@@ -11,6 +11,19 @@ import tomllib
 
 
 _PATH_FIELDS = ("archive", "seven_zip", "bert_model", "output_dir")
+FUSION_VARIANTS = (
+    "gated",
+    "mag_lite",
+    "mult_lite",
+    "late_expert_shared",
+    "text_anchor_residual",
+    "pairwise_hadamard_residual",
+    "pooled_lmf_r4",
+)
+TEXT_ADAPTER_VARIANTS = ("identity", "houlsby_output_b32")
+CLASSIFICATION_VARIANTS = ("flat", "corn")
+TEMPORAL_POSITION_VARIANTS = ("none", "sinusoidal")
+TEMPORAL_POOLING_VARIANTS = ("attention", "attention_availability")
 _TRAINING_FIELDS = (
     "seed",
     "epochs",
@@ -21,6 +34,15 @@ _TRAINING_FIELDS = (
     "heads",
     "layers",
     "dropout",
+    "regression_loss_weight",
+    "polarity_consistency_loss_weight",
+    "class_weight_exponent",
+    "synthetic_missingness_enabled",
+    "fusion_variant",
+    "text_adapter_variant",
+    "classification_variant",
+    "temporal_position_variant",
+    "temporal_pooling_variant",
     "device",
 )
 
@@ -40,6 +62,15 @@ class Q2Config:
     heads: int
     layers: int
     dropout: float
+    regression_loss_weight: float
+    polarity_consistency_loss_weight: float
+    class_weight_exponent: float
+    synthetic_missingness_enabled: bool
+    fusion_variant: str
+    text_adapter_variant: str
+    classification_variant: str
+    temporal_position_variant: str
+    temporal_pooling_variant: str
     device: str
 
 
@@ -77,6 +108,15 @@ def load_q2_config(path: Path) -> Q2Config:
         heads=values["heads"],
         layers=values["layers"],
         dropout=float(values["dropout"]),
+        regression_loss_weight=float(values["regression_loss_weight"]),
+        polarity_consistency_loss_weight=float(values["polarity_consistency_loss_weight"]),
+        class_weight_exponent=float(values["class_weight_exponent"]),
+        synthetic_missingness_enabled=values["synthetic_missingness_enabled"],
+        fusion_variant=validate_fusion_variant(values["fusion_variant"]),
+        text_adapter_variant=validate_text_adapter_variant(values["text_adapter_variant"]),
+        classification_variant=validate_classification_variant(values["classification_variant"]),
+        temporal_position_variant=validate_temporal_position_variant(values["temporal_position_variant"]),
+        temporal_pooling_variant=validate_temporal_pooling_variant(values["temporal_pooling_variant"]),
         device=values["device"],
     )
 
@@ -133,7 +173,81 @@ def _validate_training(values: Mapping[str, object]) -> None:
             raise ValueError(f"{name} must be finite")
     if values["learning_rate"] <= 0 or values["weight_decay"] < 0 or not 0 <= values["dropout"] < 1:
         raise ValueError("learning_rate, weight_decay, or dropout is outside its valid range")
+    regression_loss_weight = values["regression_loss_weight"]
+    if (
+        isinstance(regression_loss_weight, bool)
+        or not isinstance(regression_loss_weight, (int, float))
+        or not math.isfinite(float(regression_loss_weight))
+        or regression_loss_weight < 0
+    ):
+        raise ValueError("regression_loss_weight is outside its valid range")
+    polarity_consistency_loss_weight = values["polarity_consistency_loss_weight"]
+    if (
+        isinstance(polarity_consistency_loss_weight, bool)
+        or not isinstance(polarity_consistency_loss_weight, (int, float))
+        or not math.isfinite(float(polarity_consistency_loss_weight))
+        or polarity_consistency_loss_weight < 0
+    ):
+        raise ValueError("polarity_consistency_loss_weight is outside its valid range")
+    class_weight_exponent = values["class_weight_exponent"]
+    if (
+        isinstance(class_weight_exponent, bool)
+        or not isinstance(class_weight_exponent, (int, float))
+        or not math.isfinite(float(class_weight_exponent))
+        or class_weight_exponent <= 0
+    ):
+        raise ValueError("class_weight_exponent is outside its valid range")
+    if not isinstance(values["synthetic_missingness_enabled"], bool):
+        raise ValueError("synthetic_missingness_enabled must be boolean")
+    validate_fusion_variant(values["fusion_variant"])
+    validate_text_adapter_variant(values["text_adapter_variant"])
+    validate_classification_variant(values["classification_variant"])
+    validate_temporal_position_variant(values["temporal_position_variant"])
+    validate_temporal_pooling_variant(values["temporal_pooling_variant"])
     if values["hidden_size"] % values["heads"]:
         raise ValueError("hidden_size must be divisible by heads")
     if not isinstance(values["device"], str) or not values["device"]:
         raise ValueError("device must be a non-empty string")
+
+
+def validate_fusion_variant(value: object) -> str:
+    """Require one of the persisted Q2 fusion architecture names."""
+
+    if not isinstance(value, str) or value not in FUSION_VARIANTS:
+        raise ValueError(
+            "fusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared, text_anchor_residual, "
+            "pairwise_hadamard_residual, pooled_lmf_r4"
+        )
+    return value
+
+
+def validate_text_adapter_variant(value: object) -> str:
+    """Require one of the persisted Q2 text output adapter names."""
+
+    if not isinstance(value, str) or value not in TEXT_ADAPTER_VARIANTS:
+        raise ValueError("text_adapter_variant must be one of: identity, houlsby_output_b32")
+    return value
+
+
+def validate_classification_variant(value: object) -> str:
+    """Require one of the persisted Q2 classification parameterizations."""
+
+    if not isinstance(value, str) or value not in CLASSIFICATION_VARIANTS:
+        raise ValueError("classification_variant must be one of: flat, corn")
+    return value
+
+
+def validate_temporal_position_variant(value: object) -> str:
+    """Require one of the persisted Q2 temporal position encodings."""
+
+    if not isinstance(value, str) or value not in TEMPORAL_POSITION_VARIANTS:
+        raise ValueError("temporal_position_variant must be one of: none, sinusoidal")
+    return value
+
+
+def validate_temporal_pooling_variant(value: object) -> str:
+    """Require one of the persisted Q2 temporal pooling implementations."""
+
+    if not isinstance(value, str) or value not in TEMPORAL_POOLING_VARIANTS:
+        raise ValueError("temporal_pooling_variant must be one of: attention, attention_availability")
+    return value

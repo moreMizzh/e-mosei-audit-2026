@@ -1,7 +1,7 @@
 .venv/
 .tools/
 q1.toml
-q2.toml
+/q2*.toml
 .pytest_cache/
 __pycache__/
 *.py[cod]

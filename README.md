@@ -2,7 +2,7 @@
 
 ## 问题 2 跑分总表
 
-以下两表记录问题 2 每个模型/处理的单次运行结果（固定 `seed=20260924`）：Val 表来自附件 2 官方 `train/valid` 划分，Test 表只列出已完成的独立 test 推理。`macro-F1` 是当前候选的唯一主筛选指标；Val 数值只用于筛选，不代表泛化或最终赛题成绩。`v1/v2` 和 `v3/v4` 分别是保留的相同结果运行，表中不合并它们以保持产物可追溯。
+以下两表逐一记录问题 2 每个模型/处理的单次运行结果（固定 `seed=20260924`）：Val 表来自附件 2 官方 `train/valid` 划分，Test 表只列出已完成的独立 test 推理。`macro-F1` 是当前候选的唯一主筛选指标；Val 数值只用于筛选，不代表泛化或最终赛题成绩。`v1/v2` 和 `v3/v4` 分别是保留的相同结果运行，表中不合并它们以保持产物可追溯。
 
 ### Val
 
@@ -28,6 +28,7 @@
 | Gated A + pairwise Hadamard residual | `q2-valid-pairwise-hadamard-residual` | 0.631868 | 0.615855 | 0.624946 | 0.615701 | 1 | 淘汰：clean F1 未达硬门槛 |
 | Gated A + pooled LMF r4 | `q2-valid-pooled-lmf-r4` | 0.612637 | 0.600321 | 0.657110 | 0.588878 | 1 | 淘汰：clean F1、MAE 与缺失场景回退 |
 | Gated A + 固定正弦时间位置 | `q2-valid-sinusoidal-temporal-position` | 0.604396 | 0.581915 | 0.637771 | 0.592128 | 12 | 淘汰：clean F1、三类 F1 与缺失场景回退 |
+| Gated A + 可用性条件时间池化 | `q2-valid-attention-availability` | 0.637363 | 0.614853 | 0.621444 | 0.617177 | 1 | 淘汰：clean F1 未达硬门槛 |
 
 ### Test
 
@@ -53,6 +54,7 @@
 | Gated A + pairwise Hadamard residual | `q2-valid-pairwise-hadamard-residual` | - | - | - | - | 未评估 |
 | Gated A + pooled LMF r4 | `q2-valid-pooled-lmf-r4` | - | - | - | - | 未评估 |
 | Gated A + 固定正弦时间位置 | `q2-valid-sinusoidal-temporal-position` | - | - | - | - | 未评估 |
+| Gated A + 可用性条件时间池化 | `q2-valid-attention-availability` | - | - | - | - | 未评估 |
 
 `Gated v4` 的 test 行来自模型冻结后的单次后验评估：checkpoint 先按附件 2 `valid` 的 macro-F1、再按 MAE 选定，之后仅对 727 条 `test` 样本推理，没有重训、调参或再次选模。其余候选均未评估；在当前探索期不得为了补全此表而运行 test，更不能将 valid 数值复制为 test 数值。
 
@@ -259,9 +261,20 @@ PYTHONPATH="$PWD/src" .tools/q1-kaggle/bin/python -m e_mosei_audit.cli train-q2 
   --config q2.toml
 ```
 
+要从已保存的 Q2 权重复算三类 valid 报告而不重新训练，可使用新的输出文件路径：
+
+```bash
+PYTHONPATH="$PWD/src" .tools/q1-kaggle/bin/python -m e_mosei_audit.cli evaluate-q2-valid \
+  --run-dir artifacts/q2-default-v4 \
+  --output artifacts/q2-valid-evaluation-v4.json
+```
+
+该命令只构造附件 2 的 train/valid 接口以恢复归一化和 valid 预测；不索引或验证 test 键，不训练，也不生成附件 3 推理。
+
 输出目录必须此前不存在。成功后其下包含：
 
 - `metrics.json`：仅附件 2 valid 的 Accuracy、macro-F1、MAE、Pearson；
+- `valid_classification_report.json`：仅附件 2 valid 的三类混淆矩阵，以及 Negative、Neutral、Positive 各自的 precision、recall、F1 和样本数；
 - `validation_scenarios.csv`：text/audio/vision 各自 beginning/middle/end 与 10%/30%/50% 所选连续可用段的 27 个受控缺失场景，并记录相对该模态全部可用位置的实际覆盖率；
 - `attachment3_predictions.csv`：全部 30 条附件 3 对齐样本的极性与强度；
 - `attachment3_missingness.csv`：由全零证据得到的每模态不可用连续段摘要；
