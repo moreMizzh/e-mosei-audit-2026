@@ -51,6 +51,44 @@ class RecordingAttention(nn.Module):
         )
 
 
+class RecordingEncoder(nn.Module):
+    """Delegate to the shared encoder while recording late-expert padding masks."""
+
+    def __init__(self, delegate: nn.TransformerEncoder) -> None:
+        super().__init__()
+        self.delegate = delegate
+        self.src_key_padding_masks: list[torch.Tensor] = []
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        src_key_padding_mask: torch.Tensor | None = None,
+        is_causal: bool | None = None,
+    ) -> torch.Tensor:
+        if src_key_padding_mask is None:
+            raise AssertionError("late-expert encoding must pass src_key_padding_mask")
+        self.src_key_padding_masks.append(src_key_padding_mask.detach().clone())
+        return self.delegate(
+            src,
+            mask=mask,
+            src_key_padding_mask=src_key_padding_mask,
+            is_causal=is_causal,
+        )
+
+
+class CapturingCoverageGate(nn.Module):
+    """Expose coverage features as fixed expert logits without new parameters."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.inputs: list[torch.Tensor] = []
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        self.inputs.append(features.detach().clone())
+        return features[:, -3:]
+
+
 def example_masks(*, audio_available: bool = True) -> TensorMasks:
     batch_size, positions = 2, 50
     temporal = torch.ones(batch_size, positions, dtype=torch.bool)
@@ -82,6 +120,223 @@ def test_mask_aware_fusion_accepts_late_expert_shared_variant() -> None:
     model = MaskAwareTemporalFusion(fusion_variant="late_expert_shared")
 
     assert model.fusion_variant == "late_expert_shared"
+
+
+def test_late_expert_shared_returns_finite_bounded_predictions_and_expert_weights() -> None:
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="late_expert_shared",
+    )
+
+    output = model(
+        text=torch.randn(2, 50, 768),
+        audio=torch.randn(2, 50, 74),
+        vision=torch.randn(2, 50, 35),
+        masks=example_masks(),
+    )
+
+    assert output.logits.shape == (2, 3)
+    assert output.score.shape == (2,)
+    assert output.gates.shape == (2, 50, 3)
+    assert output.temporal_attention.shape == (2, 50)
+    assert output.expert_weights is not None
+    assert output.expert_weights.shape == (2, 3)
+    assert torch.isfinite(output.logits).all()
+    assert torch.isfinite(output.score).all()
+    assert torch.isfinite(output.gates).all()
+    assert torch.isfinite(output.temporal_attention).all()
+    assert torch.isfinite(output.expert_weights).all()
+    torch.testing.assert_close(output.expert_weights.sum(dim=1), torch.ones(2))
+    assert torch.all(output.score <= 3)
+    assert torch.all(output.score >= -3)
+
+
+def test_late_expert_shared_ignores_unavailable_raw_values_and_zeroes_inactive_experts() -> None:
+    torch.manual_seed(47)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="late_expert_shared",
+    ).eval()
+    temporal = torch.ones(2, 50, dtype=torch.bool)
+    text_available = temporal.clone()
+    audio_available = temporal.clone()
+    audio_available[0, [1, 5, 17]] = False
+    audio_available[1] = False
+    vision_available = temporal.clone()
+    vision_available[0] = False
+    vision_available[1, [2, 8, 23]] = False
+    masks = TensorMasks(
+        text=text_available,
+        audio=audio_available,
+        vision=vision_available,
+        temporal=temporal,
+    )
+    text = torch.randn(2, 50, 768)
+    audio = torch.randn(2, 50, 74).masked_fill(~audio_available.unsqueeze(-1), 0.0)
+    vision = torch.randn(2, 50, 35).masked_fill(~vision_available.unsqueeze(-1), 0.0)
+    changed_audio = audio.masked_fill(~audio_available.unsqueeze(-1), 1_000_000.0)
+    changed_vision = vision.masked_fill(~vision_available.unsqueeze(-1), 1_000_000.0)
+
+    with torch.no_grad():
+        baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+        changed = model(text=text, audio=changed_audio, vision=changed_vision, masks=masks)
+
+    assert baseline.expert_weights is not None
+    assert changed.expert_weights is not None
+    assert torch.equal(changed.logits, baseline.logits)
+    assert torch.equal(changed.score, baseline.score)
+    assert torch.equal(changed.gates, baseline.gates)
+    assert torch.equal(changed.temporal_attention, baseline.temporal_attention)
+    assert torch.equal(changed.expert_weights, baseline.expert_weights)
+    assert changed.expert_weights[1, 1].item() == 0.0
+    assert changed.expert_weights[0, 2].item() == 0.0
+    assert torch.equal(changed.gates[~text_available, 0], torch.zeros((~text_available).sum()))
+    assert torch.equal(changed.gates[~audio_available, 1], torch.zeros((~audio_available).sum()))
+    assert torch.equal(changed.gates[~vision_available, 2], torch.zeros((~vision_available).sum()))
+
+
+def test_late_expert_shared_coverage_keeps_valid_all_missing_frames_in_its_denominator() -> None:
+    torch.manual_seed(48)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="late_expert_shared",
+    ).eval()
+    gate = CapturingCoverageGate()
+    model.gate = gate
+    temporal = torch.ones(1, 50, dtype=torch.bool)
+    text_available = temporal.clone()
+    text_available[0, 30] = False
+    audio_available = torch.zeros_like(temporal)
+    audio_available[0, :25] = True
+    vision_available = torch.zeros_like(temporal)
+    vision_available[0, :10] = True
+    retained_masks = TensorMasks(
+        text=text_available,
+        audio=audio_available,
+        vision=vision_available,
+        temporal=temporal,
+    )
+    excluded_temporal = temporal.clone()
+    excluded_temporal[0, 30] = False
+    excluded_masks = TensorMasks(
+        text=text_available,
+        audio=audio_available,
+        vision=vision_available,
+        temporal=excluded_temporal,
+    )
+    text = torch.randn(1, 50, 768)
+    audio = torch.randn(1, 50, 74)
+    vision = torch.randn(1, 50, 35)
+
+    with torch.no_grad():
+        retained = model(text=text, audio=audio, vision=vision, masks=retained_masks)
+        excluded = model(text=text, audio=audio, vision=vision, masks=excluded_masks)
+
+    expected_retained_coverage = torch.tensor([[49 / 50, 25 / 50, 10 / 50]])
+    expected_excluded_coverage = torch.tensor([[1.0, 25 / 49, 10 / 49]])
+    assert retained.expert_weights is not None
+    assert excluded.expert_weights is not None
+    assert len(gate.inputs) == 2
+    torch.testing.assert_close(gate.inputs[0][:, -3:], expected_retained_coverage)
+    torch.testing.assert_close(gate.inputs[1][:, -3:], expected_excluded_coverage)
+    torch.testing.assert_close(retained.expert_weights, torch.softmax(expected_retained_coverage, dim=1))
+    torch.testing.assert_close(excluded.expert_weights, torch.softmax(expected_excluded_coverage, dim=1))
+    assert not torch.equal(retained.expert_weights, excluded.expert_weights)
+
+
+def test_late_expert_shared_encodes_only_rows_with_available_evidence() -> None:
+    torch.manual_seed(49)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="late_expert_shared",
+    ).eval()
+    recorder = RecordingEncoder(model.temporal_encoder)
+    model.temporal_encoder = recorder
+    temporal = torch.ones(2, 50, dtype=torch.bool)
+    text_available = temporal.clone()
+    audio_available = temporal.clone()
+    audio_available[0, [1, 5, 17]] = False
+    audio_available[1] = False
+    vision_available = temporal.clone()
+    vision_available[0] = False
+    vision_available[1, [2, 8, 23]] = False
+    masks = TensorMasks(
+        text=text_available,
+        audio=audio_available,
+        vision=vision_available,
+        temporal=temporal,
+    )
+
+    with torch.no_grad():
+        model(
+            text=torch.randn(2, 50, 768),
+            audio=torch.randn(2, 50, 74),
+            vision=torch.randn(2, 50, 35),
+            masks=masks,
+        )
+
+    expected_masks = (~text_available, ~audio_available[0:1], ~vision_available[1:2])
+    assert len(recorder.src_key_padding_masks) == 3
+    for actual, expected in zip(recorder.src_key_padding_masks, expected_masks, strict=True):
+        assert torch.equal(actual, expected)
+        assert not actual.all(dim=1).any()
+
+
+def test_late_expert_shared_routes_gradients_through_reused_modules() -> None:
+    torch.manual_seed(51)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="late_expert_shared",
+    )
+
+    output = model(
+        text=torch.randn(2, 50, 768),
+        audio=torch.randn(2, 50, 74),
+        vision=torch.randn(2, 50, 35),
+        masks=example_masks(),
+    )
+    (output.logits.square().mean() + output.score.square().mean()).backward()
+
+    for module in (model.temporal_encoder, model.pool_attention, model.gate, model.classifier, model.regressor):
+        for parameter in module.parameters():
+            assert parameter.grad is not None
+            assert torch.isfinite(parameter.grad).all()
+            assert parameter.grad.abs().sum() > 0
+
+
+def test_late_expert_shared_preserves_gated_initialization_and_cpu_rng() -> None:
+    torch.manual_seed(53)
+    gated = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
+    gated_next = torch.rand(4)
+
+    torch.manual_seed(53)
+    late_expert = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="late_expert_shared",
+    )
+    late_expert_next = torch.rand(4)
+
+    assert gated.state_dict().keys() == late_expert.state_dict().keys()
+    assert all(torch.equal(gated.state_dict()[name], late_expert.state_dict()[name]) for name in gated.state_dict())
+    assert torch.equal(gated_next, late_expert_next)
 
 
 def test_houlsby_output_adapter_returns_finite_bounded_predictions_and_weights() -> None:

@@ -30,6 +30,7 @@ class Q2Output:
     score: torch.Tensor
     gates: torch.Tensor
     temporal_attention: torch.Tensor
+    expert_weights: torch.Tensor | None = None
 
 
 class FrozenBertEncoder:
@@ -159,6 +160,9 @@ class MaskAwareTemporalFusion(nn.Module):
         if not bool(temporal.any(dim=1).all()):
             raise ValueError("each sample must retain at least one observed temporal position")
 
+        if self.fusion_variant == "late_expert_shared":
+            return self._forward_late_expert_shared(states, availability, masks.temporal)
+
         if self.fusion_variant == "mag_lite":
             mag_features = torch.cat((*states, availability[..., 1:].to(dtype=text.dtype)), dim=-1)
             nonverbal_available = availability[..., 1:].any(dim=-1, keepdim=True)
@@ -213,6 +217,65 @@ class MaskAwareTemporalFusion(nn.Module):
             gates=gates,
             temporal_attention=temporal_attention,
         )
+
+    def _forward_late_expert_shared(
+        self,
+        states: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        availability: torch.Tensor,
+        temporal_mask: torch.Tensor,
+    ) -> Q2Output:
+        """Encode each modality with the common temporal path before late fusion."""
+
+        expert_masks = tuple(temporal_mask & availability[..., index] for index in range(3))
+        encoded_experts = tuple(
+            self._encode_late_expert(state, expert_mask)
+            for state, expert_mask in zip(states, expert_masks, strict=True)
+        )
+        representations = torch.stack(tuple(result[0] for result in encoded_experts), dim=1)
+        attentions = torch.stack(tuple(result[1] for result in encoded_experts), dim=1)
+        temporal_count = temporal_mask.sum(dim=1, keepdim=True).to(dtype=representations.dtype)
+        coverage = torch.stack(expert_masks, dim=-1).sum(dim=1).to(dtype=representations.dtype) / temporal_count
+        modality_features = coverage.unsqueeze(-1) * torch.eye(
+            3,
+            device=representations.device,
+            dtype=representations.dtype,
+        )
+        expert_features = torch.cat((representations, modality_features), dim=-1)
+        expert_active = torch.stack(expert_masks, dim=-1).any(dim=1)
+        expert_logits = self.classifier(expert_features).masked_fill(~expert_active.unsqueeze(-1), 0.0)
+        expert_scores = (3.0 * torch.tanh(self.regressor(expert_features).squeeze(-1))).masked_fill(
+            ~expert_active,
+            0.0,
+        )
+        gate_features = torch.cat((representations.flatten(start_dim=1), coverage), dim=1)
+        gate_logits = self.gate(gate_features).masked_fill(~expert_active, float("-inf"))
+        expert_weights = torch.softmax(gate_logits, dim=1)
+        logits = torch.sum(expert_weights.unsqueeze(-1) * expert_logits, dim=1)
+        score = torch.sum(expert_weights * expert_scores, dim=1)
+        applied_gates = expert_weights.unsqueeze(1) * torch.stack(expert_masks, dim=-1).to(
+            dtype=representations.dtype
+        )
+        temporal_attention = torch.sum(expert_weights.unsqueeze(-1) * attentions, dim=1)
+        return Q2Output(logits, score, applied_gates, temporal_attention, expert_weights)
+
+    def _encode_late_expert(self, state: torch.Tensor, expert_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode only active sample rows so Transformer never receives all-padding input."""
+
+        batch_size, positions, hidden_size = state.shape
+        representation = state.new_zeros((batch_size, hidden_size))
+        attention = state.new_zeros((batch_size, positions))
+        active_rows = expert_mask.any(dim=1)
+        indexes = active_rows.nonzero(as_tuple=False).squeeze(1)
+        if indexes.numel() == 0:
+            return representation, attention
+        active_mask = expert_mask.index_select(0, indexes)
+        active_state = state.index_select(0, indexes).masked_fill(~active_mask.unsqueeze(-1), 0.0)
+        encoded = self.temporal_encoder(active_state, src_key_padding_mask=~active_mask)
+        encoded = encoded.masked_fill(~active_mask.unsqueeze(-1), 0.0)
+        attention_logits = self.pool_attention(encoded).squeeze(-1).masked_fill(~active_mask, float("-inf"))
+        active_attention = torch.softmax(attention_logits, dim=1)
+        pooled = torch.sum(active_attention.unsqueeze(-1) * encoded, dim=1)
+        return representation.index_copy(0, indexes, pooled), attention.index_copy(0, indexes, active_attention)
 
     def _cross_attention_context(
         self,
