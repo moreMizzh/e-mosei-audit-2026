@@ -4,6 +4,7 @@ from pathlib import Path
 
 from e_mosei_audit import cli
 from e_mosei_audit.q1.config import Q1Config
+from e_mosei_audit.q2.config import Q2Config
 
 
 def test_audit_command_passes_explicit_paths_to_workflow(monkeypatch, capsys, tmp_path) -> None:
@@ -178,3 +179,56 @@ def test_extract_q1_returns_two_for_ffmpeg_preflight_error(monkeypatch, capsys, 
 
     assert status == 2
     assert "ffmpeg preflight" in capsys.readouterr().err
+
+
+def _q2_config(tmp_path: Path) -> Q2Config:
+    return Q2Config(
+        archive=tmp_path / "data.zip",
+        seven_zip=tmp_path / "7za",
+        bert_model=tmp_path / "bert",
+        output_dir=tmp_path / "q2-output",
+        seed=7,
+        epochs=1,
+        batch_size=2,
+        learning_rate=0.001,
+        weight_decay=0.0,
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        device="cpu",
+    )
+
+
+def test_train_q2_loads_config_and_reports_summary(monkeypatch, capsys, tmp_path: Path) -> None:
+    config = _q2_config(tmp_path)
+    observed = {}
+    monkeypatch.setattr(cli, "load_q2_config", lambda path: config)
+
+    def fake_run_q2(q2_config):
+        observed["config"] = q2_config
+        return {"best_epoch": 0, "attachment3_count": 30, "accuracy": 0.5}
+
+    monkeypatch.setattr(cli, "run_q2", fake_run_q2)
+
+    status = cli.main(["train-q2", "--config", str(tmp_path / "q2.toml")])
+
+    assert status == 0
+    assert observed["config"] == config
+    assert '"attachment3_count": 30' in capsys.readouterr().out
+
+
+def test_train_q2_check_runs_only_preflight(monkeypatch, capsys, tmp_path: Path) -> None:
+    config = _q2_config(tmp_path)
+    monkeypatch.setattr(cli, "load_q2_config", lambda path: config)
+    monkeypatch.setattr(
+        cli,
+        "check_q2",
+        lambda checked_config: {"train_count": 3, "valid_count": 2, "attachment3_count": 30},
+    )
+    monkeypatch.setattr(cli, "run_q2", lambda *args: (_ for _ in ()).throw(AssertionError("must not train")))
+
+    status = cli.main(["train-q2", "--config", str(tmp_path / "q2.toml"), "--check"])
+
+    assert status == 0
+    assert '"attachment3_count": 30' in capsys.readouterr().out

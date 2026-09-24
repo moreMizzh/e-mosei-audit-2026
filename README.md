@@ -169,3 +169,48 @@ PYTHONPATH="$PWD/src:$PWD/.tools/python" python3 -m pytest -v
 ```
 
 默认测试覆盖纯数值契约、归档边界、媒体解码命令、输出事务、适配器的本地资产约束与假依赖端到端流程。真实归档审计和真实问题 1 smoke 均为 opt-in 测试：只有显式提供 `E_MOSEI_ARCHIVE`、`E_MOSEI_7ZA` 或 `E_MOSEI_Q1_CONFIG` 后才会执行；未配置时跳过是预期行为。当前工作区已显式执行真实问题 1 smoke 与 100 条全量运行，实际结果见上文，但这些派生产物不会提交到仓库。
+
+## 问题 2：局部模态缺失下的鲁棒情感预测
+
+问题 2 固定使用附件 2 与附件 3 的**对齐版本**。训练、验证和附件 3 推理共同以 `text_bert[N,3,50]` 为文本入口：本地冻结 `bert-base-uncased` 将其编码为 768 维文本状态；音频和视觉分别使用题面给定的 74、35 维输入。附件 2 中的预计算 `text[N,50,768]` 只用于核验共同接口，不作为训练专用捷径，因附件 3 没有该字段。
+
+模型以文本 attention mask 和数值模态全零位置构造独立可用性掩码，对不可用模态施加门控掩码后再进行时序融合。训练期间仅在附件 2 train 内部合成 10% 至 50% 的连续局部块缺失；原始数组、标签和 padding 不会被修改。模型同时输出 3 类情感极性（Negative、Neutral、Positive）和 `[-3,3]` 连续强度。
+
+先在本地环境安装问题二的可选依赖：
+
+```bash
+.tools/q1-kaggle/bin/python -m pip install -e '.[q2]'
+```
+
+复制 [q2-config.example.toml](docs/q2-config.example.toml) 到仓库根目录的 `q2.toml`，确认其中路径对应本机的分卷 ZIP 最后 `.zip` 卷、可执行 7-Zip 和离线 BERT 缓存。该配置文件被 Git 忽略；`output_dir` 的父目录必须已经存在，且目标目录必须是新目录。模板使用 `cuda`，没有可用 CUDA 时将其显式改为 `cpu`：
+
+```bash
+mkdir -p artifacts
+cp docs/q2-config.example.toml q2.toml
+```
+
+先执行只读预检。它验证归档完整性、附件 2 的 train/valid 接口、附件 3 唯一完整的 `01..30` 编号以及本地 BERT，不训练也不会创建输出目录：
+
+```bash
+PYTHONPATH="$PWD/src" .tools/q1-kaggle/bin/python -m e_mosei_audit.cli train-q2 \
+  --config q2.toml --check
+```
+
+预检成功后才执行训练与推理：
+
+```bash
+PYTHONPATH="$PWD/src" .tools/q1-kaggle/bin/python -m e_mosei_audit.cli train-q2 \
+  --config q2.toml
+```
+
+输出目录必须此前不存在。成功后其下包含：
+
+- `metrics.json`：仅附件 2 valid 的 Accuracy、macro-F1、MAE、Pearson；
+- `validation_scenarios.csv`：text/audio/vision 各自 beginning/middle/end 与 10%/30%/50% 所选连续可用段的 27 个受控缺失场景，并记录相对该模态全部可用位置的实际覆盖率；
+- `attachment3_predictions.csv`：全部 30 条附件 3 对齐样本的极性与强度；
+- `attachment3_missingness.csv`：由全零证据得到的每模态不可用连续段摘要；
+- `model.pt`、`run_manifest.json`、`audit_report.md`：参数、训练统计量和结果边界。
+
+附件 3 没有标签，只用于最终推理，绝不参与模型选择、阈值选择或指标计算。流程只使用赛题数据和显式本地 BERT 基础模型，不会下载模型、替换输入或引入外部情感数据。
+
+附件 2/3 是题面给定的 Python Pickle 文件，因此只能将**来源可信的官方原始归档**传给该流程。7-Zip 完整性检测可以发现归档损坏，但不能证明 Pickle 内容的发布来源；不要对未知来源或被篡改的归档执行审计、训练或预检。
