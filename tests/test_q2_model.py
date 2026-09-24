@@ -1564,6 +1564,10 @@ def test_sinusoidal_gated_ignores_appended_fully_masked_padding() -> None:
     # CPU projections can vary with sequence shape before position addition; helper prefix and padding remain exact.
     torch.testing.assert_close(padded_recorder.inputs[0][:, :positions], base_recorder.inputs[0])
     assert torch.equal(
+        padded_recorder.inputs[0][:, positions:],
+        torch.zeros_like(padded_recorder.inputs[0][:, positions:]),
+    )
+    assert torch.equal(
         _sinusoidal_position_encoding(positions + padding, 16, device=text.device, dtype=text.dtype)[:positions],
         _sinusoidal_position_encoding(positions, 16, device=text.device, dtype=text.dtype),
     )
