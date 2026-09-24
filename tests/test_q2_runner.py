@@ -15,9 +15,10 @@ from e_mosei_audit.archive import ArchiveMember
 from e_mosei_audit.q2.config import Q2Config
 from e_mosei_audit.q2.data import ALIGNED_50_MEMBER
 from e_mosei_audit.q2.missingness import FeatureNormalizer
-from e_mosei_audit.q2.model import MaskAwareTemporalFusion
+from e_mosei_audit.q2.model import MaskAwareTemporalFusion, Q2Output
 from e_mosei_audit.q2.runner import (
     Prediction,
+    _joint_loss,
     _publish_staging,
     _validate_output_target,
     check_q2,
@@ -27,6 +28,24 @@ from e_mosei_audit.q2.runner import (
     run_q2,
     write_predictions,
 )
+
+
+def test_joint_loss_applies_configured_regression_weight() -> None:
+    output = Q2Output(
+        logits=torch.tensor([[1.0, 0.0, -1.0], [0.0, 1.0, -1.0]]),
+        score=torch.tensor([0.5, -0.25]),
+        gates=torch.empty(0),
+        temporal_attention=torch.empty(0),
+    )
+    labels = torch.tensor([0, 1])
+    scores = torch.tensor([0.0, -1.0])
+    class_weights = torch.tensor([1.0, 2.0, 1.0])
+    expected = torch.nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
+    expected += 0.25 * torch.nn.functional.smooth_l1_loss(output.score, scores)
+
+    actual = _joint_loss(output, labels, scores, class_weights, regression_loss_weight=0.25)
+
+    assert torch.allclose(actual, expected)
 
 
 def test_metric_summary_reports_accuracy_macro_f1_mae_and_pearson() -> None:
@@ -174,6 +193,7 @@ def runner_config(tmp_path: Path) -> Q2Config:
         heads=4,
         layers=1,
         dropout=0.0,
+        regression_loss_weight=0.5,
         device="cpu",
     )
 
@@ -199,12 +219,14 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     with (config.output_dir / "validation_scenarios.csv").open(encoding="utf-8", newline="") as stream:
         scenarios = list(csv.DictReader(stream))
     metrics = json.loads((config.output_dir / "metrics.json").read_text(encoding="utf-8"))
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     classification = json.loads((config.output_dir / "valid_classification_report.json").read_text(encoding="utf-8"))
     report = (config.output_dir / "audit_report.md").read_text(encoding="utf-8")
     assert summary["attachment3_count"] == 30
     assert len(predictions) == 30
     assert len(scenarios) == 27
     assert set(metrics["clean"]) == {"accuracy", "macro_f1", "mae", "pearson"}
+    assert manifest["training"]["regression_loss_weight"] == 0.5
     assert classification["confusion_matrix"]["labels"] == ["Negative", "Neutral", "Positive"]
     assert sum(sum(row) for row in classification["confusion_matrix"]["counts"]) == 3
     assert {

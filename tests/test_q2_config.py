@@ -33,6 +33,7 @@ hidden_size = 16
 heads = 4
 layers = 1
 dropout = 0.0
+regression_loss_weight = 0.5
 device = "cpu"
 """,
         encoding="utf-8",
@@ -44,6 +45,7 @@ device = "cpu"
     assert config.bert_model == bert_model
     assert config.output_dir == tmp_path / "artifacts" / "q2"
     assert config.epochs == 3
+    assert config.regression_loss_weight == 0.5
     assert config.device == "cpu"
 
 
@@ -52,6 +54,8 @@ device = "cpu"
     [
         ("learning_rate", "nan", "learning_rate must be finite"),
         ("weight_decay", "nan", "weight_decay must be finite"),
+        ("regression_loss_weight", "nan", "regression_loss_weight is outside its valid range"),
+        ("regression_loss_weight", "-0.1", "regression_loss_weight is outside its valid range"),
     ],
 )
 def test_load_q2_config_rejects_nonfinite_training_values(
@@ -82,6 +86,7 @@ hidden_size = 16
 heads = 4
 layers = 1
 dropout = 0.0
+regression_loss_weight = {value if field == "regression_loss_weight" else "0.5"}
 device = "cpu"
 ''',
         encoding="utf-8",
@@ -118,6 +123,7 @@ hidden_size = 16
 heads = 4
 layers = 1
 dropout = 0.0
+regression_loss_weight = 0.5
 device = "cpu"
 ''',
         encoding="utf-8",

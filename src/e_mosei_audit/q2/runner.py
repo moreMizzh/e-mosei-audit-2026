@@ -31,7 +31,7 @@ from e_mosei_audit.q2.missingness import (
     observed_masks,
     validation_scenarios,
 )
-from e_mosei_audit.q2.model import FrozenBertEncoder, MaskAwareTemporalFusion, TensorMasks
+from e_mosei_audit.q2.model import FrozenBertEncoder, MaskAwareTemporalFusion, Q2Output, TensorMasks
 
 
 _POLARITY_LABELS = {0: "Negative", 1: "Neutral", 2: "Positive"}
@@ -205,6 +205,7 @@ def run_q2(
             normalizer,
             batch_size=config.batch_size,
             class_weights=weights,
+            regression_loss_weight=config.regression_loss_weight,
             rng=generator,
             device=device,
         )
@@ -435,6 +436,7 @@ def _train_epoch(
     *,
     batch_size: int,
     class_weights: torch.Tensor,
+    regression_loss_weight: float,
     rng: np.random.Generator,
     device: torch.device,
 ) -> None:
@@ -445,11 +447,29 @@ def _train_epoch(
         chosen = tuple(rng.choice(np.asarray(("text", "audio", "vision")), size=count, replace=False).tolist())
         dropped = apply_contiguous_drop(batch_masks, rng=rng, modalities=chosen)
         output, labels, scores = _forward_split(model, encoder, split, indexes, dropped, normalizer, device)
-        loss = nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
-        loss = loss + 0.5 * nn.functional.smooth_l1_loss(output.score, scores)
+        loss = _joint_loss(
+            output,
+            labels,
+            scores,
+            class_weights,
+            regression_loss_weight=regression_loss_weight,
+        )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
+
+
+def _joint_loss(
+    output: Q2Output,
+    labels: torch.Tensor,
+    scores: torch.Tensor,
+    class_weights: torch.Tensor,
+    *,
+    regression_loss_weight: float,
+) -> torch.Tensor:
+    classification = nn.functional.cross_entropy(output.logits, labels, weight=class_weights)
+    regression = nn.functional.smooth_l1_loss(output.score, scores)
+    return classification + regression_loss_weight * regression
 
 
 def _evaluate(
@@ -652,6 +672,7 @@ def _write_run_outputs(
                     "heads": config.heads,
                     "layers": config.layers,
                     "dropout": config.dropout,
+                    "regression_loss_weight": config.regression_loss_weight,
                     "device": config.device,
                     "synthetic_missingness": {"modalities_per_sample": "1 or 2", "fraction_range": [0.1, 0.5]},
                 },

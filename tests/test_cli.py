@@ -196,6 +196,7 @@ def _q2_config(tmp_path: Path) -> Q2Config:
         heads=4,
         layers=1,
         dropout=0.0,
+        regression_loss_weight=0.5,
         device="cpu",
     )
 
