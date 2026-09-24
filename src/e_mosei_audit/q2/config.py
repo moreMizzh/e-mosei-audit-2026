@@ -18,6 +18,7 @@ FUSION_VARIANTS = (
     "late_expert_shared",
     "text_anchor_residual",
     "pairwise_hadamard_residual",
+    "pooled_lmf_r4",
 )
 TEXT_ADAPTER_VARIANTS = ("identity", "houlsby_output_b32")
 CLASSIFICATION_VARIANTS = ("flat", "corn")
@@ -205,7 +206,7 @@ def validate_fusion_variant(value: object) -> str:
     if not isinstance(value, str) or value not in FUSION_VARIANTS:
         raise ValueError(
             "fusion_variant must be one of: gated, mag_lite, mult_lite, late_expert_shared, text_anchor_residual, "
-            "pairwise_hadamard_residual"
+            "pairwise_hadamard_residual, pooled_lmf_r4"
         )
     return value
 
