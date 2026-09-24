@@ -19,7 +19,7 @@
 - Modify: tests/test_cli.py
 - Modify: tests/test_q2_runner.py
 
-- [ ] **Step 1: Write failing configuration tests**
+- [x] **Step 1: Write failing configuration tests**
 
 Add temporal_pooling_variant = "attention" to every valid inline Q2 TOML fixture. Add a parameterized parser test for exactly attention and attention_availability and an invalid value test asserting:
 
@@ -29,7 +29,7 @@ Add attention to direct Q2Config constructors in shared CLI/runner fixtures. Add
 
     missing required training field: temporal_pooling_variant
 
-- [ ] **Step 2: Run configuration and fixture users to prove red**
+- [x] **Step 2: Run configuration and fixture users to prove red**
 
 Run:
 
@@ -37,7 +37,7 @@ Run:
 
 Expected: red failures identify the missing strict field in parser/config constructors.
 
-- [ ] **Step 3: Implement exact config contract**
+- [x] **Step 3: Implement exact config contract**
 
 Add TEMPORAL_POOLING_VARIANTS = ("attention", "attention_availability"), temporal_pooling_variant to _TRAINING_FIELDS and frozen Q2Config, and:
 
@@ -50,7 +50,7 @@ Add TEMPORAL_POOLING_VARIANTS = ("attention", "attention_availability"), tempora
 
 Validate it in _validate_training, parse/store it in load_q2_config, and document attention in the example TOML. Do not default a missing fresh configuration field.
 
-- [ ] **Step 4: Verify focused suites are green**
+- [x] **Step 4: Verify focused suites are green**
 
 Run:
 
@@ -58,7 +58,7 @@ Run:
 
 Expected: all focused configuration consumers pass.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
     git add src/e_mosei_audit/q2/config.py docs/q2-config.example.toml tests/test_q2_config.py tests/test_cli.py tests/test_q2_runner.py
     git commit -m "feat: persist Q2 temporal pooling variant"
