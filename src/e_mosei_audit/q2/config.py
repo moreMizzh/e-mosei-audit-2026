@@ -22,6 +22,7 @@ _TRAINING_FIELDS = (
     "layers",
     "dropout",
     "regression_loss_weight",
+    "class_weight_exponent",
     "device",
 )
 
@@ -42,6 +43,7 @@ class Q2Config:
     layers: int
     dropout: float
     regression_loss_weight: float
+    class_weight_exponent: float
     device: str
 
 
@@ -80,6 +82,7 @@ def load_q2_config(path: Path) -> Q2Config:
         layers=values["layers"],
         dropout=float(values["dropout"]),
         regression_loss_weight=float(values["regression_loss_weight"]),
+        class_weight_exponent=float(values["class_weight_exponent"]),
         device=values["device"],
     )
 
@@ -144,6 +147,14 @@ def _validate_training(values: Mapping[str, object]) -> None:
         or regression_loss_weight < 0
     ):
         raise ValueError("regression_loss_weight is outside its valid range")
+    class_weight_exponent = values["class_weight_exponent"]
+    if (
+        isinstance(class_weight_exponent, bool)
+        or not isinstance(class_weight_exponent, (int, float))
+        or not math.isfinite(float(class_weight_exponent))
+        or class_weight_exponent <= 0
+    ):
+        raise ValueError("class_weight_exponent is outside its valid range")
     if values["hidden_size"] % values["heads"]:
         raise ValueError("hidden_size must be divisible by heads")
     if not isinstance(values["device"], str) or not values["device"]:

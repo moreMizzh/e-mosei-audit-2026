@@ -190,7 +190,11 @@ def run_q2(
         dropout=config.dropout,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    weights = _class_weights(dataset.train.classification_labels, device)
+    weights = _class_weights(
+        dataset.train.classification_labels,
+        device,
+        exponent=config.class_weight_exponent,
+    )
     best_epoch = -1
     best_metrics: dict[str, float | None] | None = None
     best_state: dict[str, torch.Tensor] | None = None
@@ -418,11 +422,12 @@ def _seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def _class_weights(labels: np.ndarray, device: torch.device) -> torch.Tensor:
+def _class_weights(labels: np.ndarray, device: torch.device, *, exponent: float) -> torch.Tensor:
     counts = np.bincount(labels, minlength=3).astype(np.float32)
     if np.any(counts == 0):
         raise ValueError("training split must contain each polarity class")
-    weights = counts.sum() / (3.0 * counts)
+    raw = counts**(-exponent)
+    weights = raw * counts.sum() / np.sum(counts * raw)
     return torch.as_tensor(weights, device=device)
 
 
@@ -673,6 +678,7 @@ def _write_run_outputs(
                     "layers": config.layers,
                     "dropout": config.dropout,
                     "regression_loss_weight": config.regression_loss_weight,
+                    "class_weight_exponent": config.class_weight_exponent,
                     "device": config.device,
                     "synthetic_missingness": {"modalities_per_sample": "1 or 2", "fraction_range": [0.1, 0.5]},
                 },

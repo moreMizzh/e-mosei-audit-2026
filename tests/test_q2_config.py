@@ -34,6 +34,7 @@ heads = 4
 layers = 1
 dropout = 0.0
 regression_loss_weight = 0.5
+class_weight_exponent = 1.0
 device = "cpu"
 """,
         encoding="utf-8",
@@ -46,6 +47,7 @@ device = "cpu"
     assert config.output_dir == tmp_path / "artifacts" / "q2"
     assert config.epochs == 3
     assert config.regression_loss_weight == 0.5
+    assert config.class_weight_exponent == 1.0
     assert config.device == "cpu"
 
 
@@ -56,6 +58,9 @@ device = "cpu"
         ("weight_decay", "nan", "weight_decay must be finite"),
         ("regression_loss_weight", "nan", "regression_loss_weight is outside its valid range"),
         ("regression_loss_weight", "-0.1", "regression_loss_weight is outside its valid range"),
+        ("class_weight_exponent", "0.0", "class_weight_exponent is outside its valid range"),
+        ("class_weight_exponent", "-1.0", "class_weight_exponent is outside its valid range"),
+        ("class_weight_exponent", "nan", "class_weight_exponent is outside its valid range"),
     ],
 )
 def test_load_q2_config_rejects_nonfinite_training_values(
@@ -87,6 +92,7 @@ heads = 4
 layers = 1
 dropout = 0.0
 regression_loss_weight = {value if field == "regression_loss_weight" else "0.5"}
+class_weight_exponent = {value if field == "class_weight_exponent" else "1.0"}
 device = "cpu"
 ''',
         encoding="utf-8",
@@ -124,6 +130,7 @@ heads = 4
 layers = 1
 dropout = 0.0
 regression_loss_weight = 0.5
+class_weight_exponent = 1.0
 device = "cpu"
 ''',
         encoding="utf-8",

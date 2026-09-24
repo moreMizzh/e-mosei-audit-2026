@@ -196,6 +196,7 @@ def runner_config(tmp_path: Path) -> Q2Config:
         layers=1,
         dropout=0.0,
         regression_loss_weight=0.5,
+        class_weight_exponent=1.0,
         device="cpu",
     )
 
@@ -229,6 +230,7 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     assert len(scenarios) == 27
     assert set(metrics["clean"]) == {"accuracy", "macro_f1", "mae", "pearson"}
     assert manifest["training"]["regression_loss_weight"] == 0.5
+    assert manifest["training"]["class_weight_exponent"] == 1.0
     assert classification["confusion_matrix"]["labels"] == ["Negative", "Neutral", "Positive"]
     assert sum(sum(row) for row in classification["confusion_matrix"]["counts"]) == 3
     assert {
@@ -267,6 +269,43 @@ def test_run_q2_forwards_configured_regression_loss_weight_to_training(monkeypat
     run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
 
     assert observed_weights == [0.25]
+
+
+def test_class_weights_use_normalized_inverse_frequency_exponent() -> None:
+    labels = np.array([0, 0, 1, 2], dtype=np.int64)
+
+    baseline = q2_runner._class_weights(labels, torch.device("cpu"), exponent=1.0)
+    exponent_two = q2_runner._class_weights(labels, torch.device("cpu"), exponent=2.0)
+
+    assert torch.allclose(baseline, torch.tensor([2 / 3, 4 / 3, 4 / 3]))
+    assert torch.allclose(exponent_two, torch.tensor([0.4, 1.6, 1.6]))
+    assert torch.isclose(exponent_two[torch.as_tensor(labels)].mean(), torch.tensor(1.0))
+
+
+def test_run_q2_forwards_configured_class_weight_exponent_to_training(monkeypatch, tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a training or validation input"},
+        }
+    }
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+    observed_exponents: list[float] = []
+    original_class_weights = q2_runner._class_weights
+
+    def recording_class_weights(*args, **kwargs):
+        observed_exponents.append(kwargs["exponent"])
+        return original_class_weights(*args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "_class_weights", recording_class_weights)
+    config = replace(runner_config(tmp_path), class_weight_exponent=1.25)
+
+    run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
+
+    assert observed_exponents == [1.25]
 
 
 def test_run_q2_does_not_validate_or_use_attachment2_test_split(tmp_path: Path) -> None:
