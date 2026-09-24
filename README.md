@@ -1,5 +1,39 @@
 # E 题数据审计与问题 1 特征对齐
 
+## 问题 2 跑分总表
+
+以下是附件 2 官方 `train/valid` 划分上的单次运行记录（固定 `seed=20260924`）。`macro-F1` 是当前候选的唯一主筛选指标；这些数值只是 valid 筛选证据，不代表泛化或最终赛题成绩。`v1/v2` 和 `v3/v4` 分别是保留的相同结果运行，表中不合并它们以保持产物可追溯。
+
+| 模型/处理 | 产物目录 | Accuracy | Macro-F1 | MAE | Pearson | 最佳 epoch | 结论 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Gated v1 | `q2-default` | 0.638736 | 0.601454 | 0.855128 | 0.647105 | 1 | 历史基线 |
+| Gated v2 | `q2-default-v2` | 0.638736 | 0.601454 | 0.855128 | 0.647105 | 1 | 历史重复运行 |
+| Gated v3 | `q2-default-v3` | 0.611264 | 0.601253 | 0.624696 | 0.617944 | 6 | 历史基线 |
+| Gated v4 | `q2-default-v4` | 0.611264 | 0.601253 | 0.624696 | 0.617944 | 6 | 当前比较基线 |
+| Gated，`dropout=0.20` | `q2-valid-dropout-020` | 0.620879 | 0.603798 | 0.694894 | 0.657805 | 3 | 淘汰 |
+| Gated，`regression_loss_weight=0.25` | `q2-valid-regression-loss-025` | 0.622253 | 0.601034 | 0.648230 | 0.651823 | 3 | 淘汰 |
+| Gated，`hidden_size=256` | `q2-valid-hidden-256` | 0.600275 | 0.588328 | 0.638196 | 0.591613 | 11 | 淘汰 |
+| Gated，`class_weight_exponent=1.25` | `q2-valid-class-weight-125` | 0.620879 | 0.591033 | 0.660889 | 0.622601 | 29 | 淘汰 |
+| Gated A，关闭训练合成缺失 | `q2-valid-no-train-missingness` | 0.638736 | **0.616568** | 0.621341 | 0.617156 | 1 | 当前顺序对照 |
+| Gated A + 极性-强度一致性 `0.10` | `q2-valid-polarity-consistency-010` | 0.637363 | 0.605453 | 0.719483 | 0.591059 | 1 | 淘汰 |
+| MAG-lite A，冻结 BERT | `q2-valid-mag-lite` | 0.597527 | 0.600751 | **0.578128** | 0.656475 | 3 | 淘汰：F1 与缺失场景回退 |
+
+| 模型/处理 | 产物目录 | Test Accuracy | Test Macro-F1 | Test MAE | Test Pearson | 状态 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| Gated v1 | `q2-default` | - | - | - | - | 未评估 |
+| Gated v2 | `q2-default-v2` | - | - | - | - | 未评估 |
+| Gated v3 | `q2-default-v3` | - | - | - | - | 未评估 |
+| Gated v4 | `q2-default-v4` | - | - | - | - | 未评估 |
+| Gated，`dropout=0.20` | `q2-valid-dropout-020` | - | - | - | - | 未评估 |
+| Gated，`regression_loss_weight=0.25` | `q2-valid-regression-loss-025` | - | - | - | - | 未评估 |
+| Gated，`hidden_size=256` | `q2-valid-hidden-256` | - | - | - | - | 未评估 |
+| Gated，`class_weight_exponent=1.25` | `q2-valid-class-weight-125` | - | - | - | - | 未评估 |
+| Gated A，关闭训练合成缺失 | `q2-valid-no-train-missingness` | - | - | - | - | 未评估 |
+| Gated A + 极性-强度一致性 `0.10` | `q2-valid-polarity-consistency-010` | - | - | - | - | 未评估 |
+| MAG-lite A，冻结 BERT | `q2-valid-mag-lite` | - | - | - | - | 未评估 |
+
+第二张表没有数值是刻意的：本项目当前禁止读取、训练、选模或汇报附件 2 `test`，因此没有任何有效的 test 跑分。未来只有在模型与方案冻结后、按赛题允许的单次最终评估流程获得标签时，才应填写该表，且绝不能将 valid 数值复制为 test 数值。
+
 这是一个面向 2026 年研究生数学建模竞赛 E 题的可复现数据入口。它把原始分卷 ZIP 作为只读输入：先审计附件 1 至附件 4 的数据契约，再为问题 1 从附件 1 的 100 条原始视频生成可追溯的三模态时间序列特征。
 
 ## 项目提供什么
