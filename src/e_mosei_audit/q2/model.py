@@ -96,6 +96,10 @@ class MaskAwareTemporalFusion(nn.Module):
         if self.fusion_variant == "mag_lite":
             self.mag_shift = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.Tanh())
             self.mag_gate = nn.Sequential(nn.Linear(hidden_size * 3 + 2, hidden_size), nn.Sigmoid())
+        if self.fusion_variant == "mult_lite":
+            self.text_from_audio = nn.MultiheadAttention(hidden_size, heads, dropout=dropout, batch_first=True)
+            self.text_from_vision = nn.MultiheadAttention(hidden_size, heads, dropout=dropout, batch_first=True)
+            self.mult_lite_norm = nn.LayerNorm(hidden_size)
         self.gate = nn.Sequential(
             nn.Linear(hidden_size * 3 + 3, hidden_size),
             nn.GELU(),
@@ -147,6 +151,27 @@ class MaskAwareTemporalFusion(nn.Module):
             )
             states = (text_state, states[1], states[2])
 
+        if self.fusion_variant == "mult_lite":
+            audio_context = self._cross_attention_context(
+                query=states[0],
+                source=states[1],
+                query_available=availability[..., 0],
+                source_available=availability[..., 1],
+                attention=self.text_from_audio,
+            )
+            vision_context = self._cross_attention_context(
+                query=states[0],
+                source=states[2],
+                query_available=availability[..., 0],
+                source_available=availability[..., 2],
+                attention=self.text_from_vision,
+            )
+            nonverbal_present = availability[..., 1:].any(dim=1)
+            source_count = nonverbal_present.sum(dim=-1).clamp_min(1).to(dtype=text.dtype).view(-1, 1, 1)
+            text_update = self.mult_lite_norm(states[0] + (audio_context + vision_context) / source_count)
+            can_update_text = availability[..., 0:1] & nonverbal_present.any(dim=-1).view(-1, 1, 1)
+            states = (torch.where(can_update_text, text_update, states[0]), states[1], states[2])
+
         gate_features = torch.cat((*states, availability.to(dtype=text.dtype)), dim=-1)
         gate_logits = self.gate(gate_features).masked_fill(~availability, float("-inf"))
         safe_gate_logits = torch.where(any_available.unsqueeze(-1), gate_logits, torch.zeros_like(gate_logits))
@@ -169,6 +194,32 @@ class MaskAwareTemporalFusion(nn.Module):
             gates=gates,
             temporal_attention=temporal_attention,
         )
+
+    def _cross_attention_context(
+        self,
+        *,
+        query: torch.Tensor,
+        source: torch.Tensor,
+        query_available: torch.Tensor,
+        source_available: torch.Tensor,
+        attention: nn.MultiheadAttention,
+    ) -> torch.Tensor:
+        """Attend only samples with at least one available query and source position."""
+
+        active = query_available.any(dim=1) & source_available.any(dim=1)
+        context = torch.zeros_like(query)
+        indexes = active.nonzero(as_tuple=False).squeeze(1)
+        if indexes.numel() == 0:
+            return context
+        attended, _ = attention(
+            query[indexes],
+            source[indexes],
+            source[indexes],
+            key_padding_mask=~source_available[indexes],
+            need_weights=False,
+        )
+        attended = attended.masked_fill(~query_available[indexes].unsqueeze(-1), 0.0)
+        return context.index_copy(0, indexes, attended)
 
 
 def _projection(input_size: int, hidden_size: int) -> nn.Sequential:

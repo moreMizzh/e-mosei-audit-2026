@@ -57,7 +57,7 @@ device = "cpu"
     assert config.device == "cpu"
 
 
-@pytest.mark.parametrize("variant", ["gated", "mag_lite"])
+@pytest.mark.parametrize("variant", ["gated", "mag_lite", "mult_lite"])
 def test_load_q2_config_parses_supported_fusion_variant(tmp_path: Path, variant: str) -> None:
     archive = tmp_path / "data.zip"
     archive.write_bytes(b"zip")
@@ -133,7 +133,7 @@ device = "cpu"
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="fusion_variant must be one of: gated, mag_lite"):
+    with pytest.raises(ValueError, match="fusion_variant must be one of: gated, mag_lite, mult_lite"):
         load_q2_config(config_path)
 
 

@@ -11,7 +11,7 @@ import tomllib
 
 
 _PATH_FIELDS = ("archive", "seven_zip", "bert_model", "output_dir")
-FUSION_VARIANTS = ("gated", "mag_lite")
+FUSION_VARIANTS = ("gated", "mag_lite", "mult_lite")
 _TRAINING_FIELDS = (
     "seed",
     "epochs",
@@ -186,5 +186,5 @@ def validate_fusion_variant(value: object) -> str:
     """Require one of the persisted Q2 fusion architecture names."""
 
     if not isinstance(value, str) or value not in FUSION_VARIANTS:
-        raise ValueError("fusion_variant must be one of: gated, mag_lite")
+        raise ValueError("fusion_variant must be one of: gated, mag_lite, mult_lite")
     return value

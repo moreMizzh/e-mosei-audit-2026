@@ -340,6 +340,29 @@ def test_run_q2_records_mag_lite_fusion_variant(tmp_path: Path) -> None:
     assert manifest["training"]["fusion_variant"] == "mag_lite"
 
 
+def test_run_q2_records_mult_lite_fusion_variant(tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a training or validation input"},
+        }
+    }
+    for index in range(1, 31):
+        path = f"E题数据/附件3-模态缺失特征样本/对齐版本/附件3_{index:02d}.pkl"
+        members[path] = runner_attachment3_payload(index)
+    config = replace(
+        runner_config(tmp_path),
+        output_dir=tmp_path / "q2-mult-output",
+        fusion_variant="mult_lite",
+    )
+
+    run_q2(config, archive=RunnerArchive(members), token_encoder=TinyTokenEncoder())
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["training"]["fusion_variant"] == "mult_lite"
+
+
 def test_run_q2_forwards_configured_regression_loss_weight_to_training(monkeypatch, tmp_path: Path) -> None:
     members: dict[str, object] = {
         ALIGNED_50_MEMBER: {
@@ -648,6 +671,59 @@ def test_evaluate_saved_q2_valid_reconstructs_mag_lite_checkpoint(tmp_path: Path
     assert archive.verify_count == 1
 
 
+def test_evaluate_saved_q2_valid_reconstructs_mult_lite_checkpoint(tmp_path: Path) -> None:
+    members: dict[str, object] = {
+        ALIGNED_50_MEMBER: {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "a valid evaluation input"},
+        }
+    }
+    archive = RunnerArchive(members)
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-mult-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(
+        hidden_size=16, heads=4, layers=1, dropout=0.0, fusion_variant="mult_lite"
+    )
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "fusion_variant": "mult_lite",
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "mult-valid-report.json",
+        archive=archive,
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert report["sample_count"] == 3
+    assert archive.verify_count == 1
+
+
 def test_evaluate_saved_q2_valid_rejects_unsupported_manifest_fusion_variant(tmp_path: Path) -> None:
     members: dict[str, object] = {
         ALIGNED_50_MEMBER: {
@@ -688,7 +764,7 @@ def test_evaluate_saved_q2_valid_rejects_unsupported_manifest_fusion_variant(tmp
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="fusion_variant must be one of: gated, mag_lite"):
+    with pytest.raises(ValueError, match="fusion_variant must be one of: gated, mag_lite, mult_lite"):
         evaluate_saved_q2_valid(
             run_dir,
             tmp_path / "invalid-variant-report.json",
