@@ -292,6 +292,16 @@ def test_class_weights_baseline_exponent_preserves_legacy_float32_formula() -> N
     assert torch.equal(actual, expected)
 
 
+def test_class_weights_extreme_exponent_remains_finite_for_balanced_classes() -> None:
+    labels = np.repeat(np.arange(3, dtype=np.int64), 2)
+
+    weights = q2_runner._class_weights(labels, torch.device("cpu"), exponent=150.0)
+
+    assert torch.isfinite(weights).all()
+    assert torch.equal(weights, torch.ones(3))
+    assert torch.equal(weights[torch.as_tensor(labels)].mean(), torch.tensor(1.0))
+
+
 def test_run_q2_forwards_configured_class_weight_exponent_to_training(monkeypatch, tmp_path: Path) -> None:
     members: dict[str, object] = {
         ALIGNED_50_MEMBER: {

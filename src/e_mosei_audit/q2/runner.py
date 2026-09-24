@@ -429,9 +429,10 @@ def _class_weights(labels: np.ndarray, device: torch.device, *, exponent: float)
     if exponent == 1.0:
         weights = counts.sum() / (3.0 * counts)
         return torch.as_tensor(weights, device=device)
-    raw = counts**(-exponent)
-    weights = raw * counts.sum() / np.sum(counts * raw)
-    return torch.as_tensor(weights, device=device)
+    stable_counts = counts.astype(np.float64)
+    relative = (stable_counts.min() / stable_counts) ** exponent
+    weights = relative * stable_counts.sum() / np.sum(stable_counts * relative)
+    return torch.as_tensor(weights.astype(np.float32), device=device)
 
 
 def _train_epoch(
