@@ -328,6 +328,7 @@ def evaluate_saved_q2_valid(
     training = _manifest_mapping(manifest, "training")
     normalizer_values = _manifest_mapping(manifest, "normalizer")
     text_encoder_variant = _manifest_text_encoder_variant(training)
+    _manifest_dropout_consistency_variant(training)
     device = _resolve_device(_manifest_string(training, "device"))
     active_archive = archive or SevenZipArchive(
         Path(_manifest_string(manifest, "archive")),
@@ -493,6 +494,14 @@ def _manifest_classification_variant(training: Mapping[str, object]) -> str:
     if "classification_variant" not in training:
         return "flat"
     return validate_classification_variant(training["classification_variant"])
+
+
+def _manifest_dropout_consistency_variant(training: Mapping[str, object]) -> str:
+    """Treat historical saved runs as using the original one-view objective."""
+
+    if "dropout_consistency_variant" not in training:
+        return "none"
+    return validate_dropout_consistency_variant(training["dropout_consistency_variant"])
 
 
 def _manifest_normalizer_array(manifest: Mapping[str, object], field: str, width: int) -> np.ndarray:
@@ -927,6 +936,7 @@ def _write_run_outputs(
                 "dropout": config.dropout,
                 "regression_loss_weight": config.regression_loss_weight,
                 "polarity_consistency_loss_weight": config.polarity_consistency_loss_weight,
+                "dropout_consistency_variant": config.dropout_consistency_variant,
                 "class_weight_exponent": config.class_weight_exponent,
                 "fusion_variant": config.fusion_variant,
                 "text_adapter_variant": config.text_adapter_variant,

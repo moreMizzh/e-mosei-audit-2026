@@ -680,6 +680,58 @@ def test_run_q2_writes_30_attachment_predictions_and_27_scenarios(tmp_path: Path
     assert "最不利 macro-F1 场景" in report
 
 
+def test_rdrop_run_manifest_reconstructs_valid_without_test_or_attachment3(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = replace(
+        runner_config(tmp_path),
+        dropout=0.1,
+        dropout_consistency_variant="rdrop_alpha_1",
+    )
+
+    summary = run_q2(
+        config,
+        archive=runner_archive_with_inaccessible_test(),
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    with (config.output_dir / "attachment3_predictions.csv").open(encoding="utf-8", newline="") as stream:
+        predictions = list(csv.DictReader(stream))
+    valid_only_archive = RunnerArchive(
+        {
+            ALIGNED_50_MEMBER: TrainValidPayloadWithInaccessibleTest(
+                {
+                    "train": runner_split([0, 1, 2]),
+                    "valid": runner_split([0, 1, 2]),
+                    "test": {"not": "a valid evaluation input"},
+                }
+            )
+        }
+    )
+    observed_strict: list[bool] = []
+    original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
+
+    def recording_load_state_dict(self, *args, **kwargs):
+        observed_strict.append(kwargs["strict"])
+        return original_load_state_dict(self, *args, **kwargs)
+
+    monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
+    report = evaluate_saved_q2_valid(
+        config.output_dir,
+        tmp_path / "rdrop-valid-report.json",
+        archive=valid_only_archive,
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert summary["attachment3_count"] == 30
+    assert len(predictions) == 30
+    assert manifest["training"]["dropout_consistency_variant"] == "rdrop_alpha_1"
+    assert report["sample_count"] == 3
+    assert valid_only_archive.verify_count == 1
+    assert observed_strict == [True]
+
+
 def test_run_q2_records_mag_lite_fusion_variant(tmp_path: Path) -> None:
     members: dict[str, object] = {
         ALIGNED_50_MEMBER: {
@@ -1226,6 +1278,20 @@ def test_check_q2_verifies_inputs_without_training_or_creating_output(tmp_path: 
     assert summary == {"train_count": 3, "valid_count": 3, "attachment3_count": 30}
     assert archive.verify_count == 1
     assert not config.output_dir.exists()
+
+
+def test_manifest_dropout_consistency_variant_defaults_and_validates() -> None:
+    assert q2_runner._manifest_dropout_consistency_variant({}) == "none"
+    assert q2_runner._manifest_dropout_consistency_variant({"dropout_consistency_variant": "none"}) == "none"
+    assert (
+        q2_runner._manifest_dropout_consistency_variant({"dropout_consistency_variant": "rdrop_alpha_1"})
+        == "rdrop_alpha_1"
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"\Adropout_consistency_variant must be one of: none, rdrop_alpha_1\Z",
+    ):
+        q2_runner._manifest_dropout_consistency_variant({"dropout_consistency_variant": "unsupported"})
 
 
 def test_evaluate_saved_q2_valid_reconstructs_legacy_gated_identity_without_accessing_test(monkeypatch, tmp_path: Path) -> None:
@@ -2668,6 +2734,47 @@ def test_evaluate_saved_q2_valid_rejects_invalid_or_unrestorable_scalar_mix_stat
             ),
             token_encoder=ScalarMixTokenEncoder(),
         )
+
+
+def test_evaluate_saved_q2_valid_rejects_invalid_dropout_semantic_before_archive_or_model(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-invalid-rdrop-run"
+    _write_saved_scalar_mix_run(run_dir, config, text_encoder_variant="last_hidden_state")
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["training"]["dropout_consistency_variant"] = "unsupported"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    archive = RunnerArchive(
+        {
+            ALIGNED_50_MEMBER: TrainValidPayloadWithInaccessibleTest(
+                {
+                    "train": runner_split([0, 1, 2]),
+                    "valid": runner_split([0, 1, 2]),
+                    "test": {"not": "a valid evaluation input"},
+                }
+            )
+        }
+    )
+
+    def fail_model_construction(*args, **kwargs):
+        raise AssertionError("invalid semantic must be rejected before model construction")
+
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", fail_model_construction)
+
+    with pytest.raises(
+        ValueError,
+        match=r"\Adropout_consistency_variant must be one of: none, rdrop_alpha_1\Z",
+    ):
+        evaluate_saved_q2_valid(
+            run_dir,
+            tmp_path / "invalid-rdrop-valid-report.json",
+            archive=archive,
+            token_encoder=TinyTokenEncoder(),
+        )
+
+    assert archive.verify_count == 0
 
 
 def test_output_validation_requires_existing_parent_without_creating_it(tmp_path: Path) -> None:
