@@ -282,6 +282,16 @@ def test_class_weights_use_normalized_inverse_frequency_exponent() -> None:
     assert torch.isclose(exponent_two[torch.as_tensor(labels)].mean(), torch.tensor(1.0))
 
 
+def test_class_weights_baseline_exponent_preserves_legacy_float32_formula() -> None:
+    labels = np.repeat(np.arange(3, dtype=np.int64), [7, 11, 13])
+    counts = np.bincount(labels, minlength=3).astype(np.float32)
+    expected = torch.as_tensor(counts.sum() / (3.0 * counts), device=torch.device("cpu"))
+
+    actual = q2_runner._class_weights(labels, torch.device("cpu"), exponent=1.0)
+
+    assert torch.equal(actual, expected)
+
+
 def test_run_q2_forwards_configured_class_weight_exponent_to_training(monkeypatch, tmp_path: Path) -> None:
     members: dict[str, object] = {
         ALIGNED_50_MEMBER: {

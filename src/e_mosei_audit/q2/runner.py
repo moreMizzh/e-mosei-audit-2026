@@ -426,6 +426,9 @@ def _class_weights(labels: np.ndarray, device: torch.device, *, exponent: float)
     counts = np.bincount(labels, minlength=3).astype(np.float32)
     if np.any(counts == 0):
         raise ValueError("training split must contain each polarity class")
+    if exponent == 1.0:
+        weights = counts.sum() / (3.0 * counts)
+        return torch.as_tensor(weights, device=device)
     raw = counts**(-exponent)
     weights = raw * counts.sum() / np.sum(counts * raw)
     return torch.as_tensor(weights, device=device)
