@@ -335,13 +335,16 @@ class MaskAwareTemporalFusion(nn.Module):
 
         encoded = self.temporal_encoder(fused, src_key_padding_mask=~temporal)
         encoded = encoded.masked_fill(~temporal.unsqueeze(-1), 0.0)
-        attention_logits = self.pool_attention(encoded).squeeze(-1)
-        if self.temporal_pooling_variant == "attention_availability":
-            attention_logits = attention_logits + self.pool_availability_bias(
-                availability.to(dtype=encoded.dtype)
-            ).squeeze(-1)
-        attention_logits = attention_logits.masked_fill(~temporal, float("-inf"))
-        temporal_attention = torch.softmax(attention_logits, dim=1)
+        if self.temporal_pooling_variant == "masked_mean":
+            temporal_attention = temporal.to(encoded.dtype) / temporal.sum(dim=1, keepdim=True).to(encoded.dtype)
+        else:
+            attention_logits = self.pool_attention(encoded).squeeze(-1)
+            if self.temporal_pooling_variant == "attention_availability":
+                attention_logits = attention_logits + self.pool_availability_bias(
+                    availability.to(dtype=encoded.dtype)
+                ).squeeze(-1)
+            attention_logits = attention_logits.masked_fill(~temporal, float("-inf"))
+            temporal_attention = torch.softmax(attention_logits, dim=1)
         pooled = torch.sum(temporal_attention.unsqueeze(-1) * encoded, dim=1)
         if self.fusion_variant == "pooled_lmf_r4":
             residual = _pooled_lmf_residual(states, availability, masks.temporal, self.pooled_lmf_factors)
@@ -442,8 +445,11 @@ class MaskAwareTemporalFusion(nn.Module):
         active_state = state.index_select(0, indexes).masked_fill(~active_mask.unsqueeze(-1), 0.0)
         encoded = self.temporal_encoder(active_state, src_key_padding_mask=~active_mask)
         encoded = encoded.masked_fill(~active_mask.unsqueeze(-1), 0.0)
-        attention_logits = self.pool_attention(encoded).squeeze(-1).masked_fill(~active_mask, float("-inf"))
-        active_attention = torch.softmax(attention_logits, dim=1)
+        if self.temporal_pooling_variant == "masked_mean":
+            active_attention = active_mask.to(encoded.dtype) / active_mask.sum(dim=1, keepdim=True).to(encoded.dtype)
+        else:
+            attention_logits = self.pool_attention(encoded).squeeze(-1).masked_fill(~active_mask, float("-inf"))
+            active_attention = torch.softmax(attention_logits, dim=1)
         pooled = torch.sum(active_attention.unsqueeze(-1) * encoded, dim=1)
         return representation.index_copy(0, indexes, pooled), attention.index_copy(0, indexes, active_attention)
 

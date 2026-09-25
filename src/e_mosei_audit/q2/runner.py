@@ -360,6 +360,7 @@ def evaluate_saved_q2_valid(
         classification_variant=classification_variant,
         dropout_consistency_variant=dropout_consistency_variant,
     )
+    temporal_pooling_variant = _manifest_temporal_pooling_variant(training)
     device = _resolve_device(_manifest_string(training, "device"))
     active_archive = archive or SevenZipArchive(
         Path(_manifest_string(manifest, "archive")),
@@ -385,7 +386,7 @@ def evaluate_saved_q2_valid(
         dropout=_manifest_dropout(training, "dropout"),
         fusion_variant=_manifest_fusion_variant(training),
         temporal_position_variant=_manifest_temporal_position_variant(training),
-        temporal_pooling_variant=_manifest_temporal_pooling_variant(training),
+        temporal_pooling_variant=temporal_pooling_variant,
         text_adapter_variant=_manifest_text_adapter_variant(training),
         classification_variant=classification_variant,
     ).to(device)

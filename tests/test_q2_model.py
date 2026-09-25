@@ -124,6 +124,13 @@ class RecordingAvailabilityBias(nn.Module):
         return self.delegate(features)
 
 
+class FailingPoolAttention(nn.Module):
+    """Fail if masked-mean pooling evaluates learned temporal attention."""
+
+    def forward(self, encoded: torch.Tensor) -> torch.Tensor:
+        raise AssertionError("masked_mean must not evaluate pool_attention")
+
+
 def example_masks(*, audio_available: bool = True) -> TensorMasks:
     batch_size, positions = 2, 50
     temporal = torch.ones(batch_size, positions, dtype=torch.bool)
@@ -201,7 +208,7 @@ def test_attention_availability_adds_only_zero_bias_and_preserves_initialization
     assert torch.equal(availability_successor, attention_successor)
 
 
-@pytest.mark.parametrize("variant", ["attention", "attention_availability"])
+@pytest.mark.parametrize("variant", ["attention", "attention_availability", "masked_mean"])
 def test_temporal_pooling_variant_is_stored_after_validation(variant: str) -> None:
     model = MaskAwareTemporalFusion(
         hidden_size=16,
@@ -217,7 +224,7 @@ def test_temporal_pooling_variant_is_stored_after_validation(variant: str) -> No
 def test_temporal_pooling_variant_rejects_unknown_value() -> None:
     with pytest.raises(
         ValueError,
-        match=r"\Atemporal_pooling_variant must be one of: attention, attention_availability\Z",
+        match=r"\Atemporal_pooling_variant must be one of: attention, attention_availability, masked_mean\Z",
     ):
         MaskAwareTemporalFusion(
             hidden_size=16,
@@ -226,6 +233,121 @@ def test_temporal_pooling_variant_rejects_unknown_value() -> None:
             dropout=0.0,
             temporal_pooling_variant="unsupported",
         )
+
+
+def test_masked_mean_pooling_uses_uniform_valid_attention_without_learned_pool() -> None:
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_pooling_variant="masked_mean",
+    ).eval()
+    model.pool_attention = FailingPoolAttention()
+    masks = availability_pooling_masks()
+
+    output = model(
+        text=torch.randn(2, 5, 768),
+        audio=torch.randn(2, 5, 74),
+        vision=torch.randn(2, 5, 35),
+        masks=masks,
+    )
+
+    temporal = masks.temporal & (masks.text | masks.audio | masks.vision)
+    expected = temporal.to(dtype=output.temporal_attention.dtype)
+    expected = expected / temporal.sum(dim=1, keepdim=True).to(dtype=expected.dtype)
+    assert torch.equal(output.temporal_attention, expected)
+
+
+def test_masked_mean_ignores_unavailable_raw_values_and_appended_padding() -> None:
+    torch.manual_seed(167)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_pooling_variant="masked_mean",
+    ).eval()
+    positions, padding = 4, 2
+    text = torch.randn(2, positions, 768)
+    audio = torch.randn(2, positions, 74)
+    vision = torch.randn(2, positions, 35)
+    masks = TensorMasks(
+        text=torch.tensor([[True, False, True, True], [False, True, True, True]]),
+        audio=torch.tensor([[False, True, True, False], [True, False, True, True]]),
+        vision=torch.tensor([[True, True, False, True], [True, True, False, False]]),
+        temporal=torch.ones(2, positions, dtype=torch.bool),
+    )
+
+    baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+    changed = model(
+        text=text.masked_fill(~masks.text.unsqueeze(-1), 1_000_000.0),
+        audio=audio.masked_fill(~masks.audio.unsqueeze(-1), 1_000_000.0),
+        vision=vision.masked_fill(~masks.vision.unsqueeze(-1), 1_000_000.0),
+        masks=masks,
+    )
+    assert_same_public_output(changed, baseline)
+
+    padded_masks = TensorMasks(
+        text=torch.cat((masks.text, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        audio=torch.cat((masks.audio, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        vision=torch.cat((masks.vision, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        temporal=torch.cat((masks.temporal, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+    )
+    padded_model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_pooling_variant="masked_mean",
+    ).eval()
+    padded_model.load_state_dict(model.state_dict())
+    padded = padded_model(
+        text=torch.cat((text, torch.full((2, padding, 768), 1_000_000.0)), dim=1),
+        audio=torch.cat((audio, torch.full((2, padding, 74), 1_000_000.0)), dim=1),
+        vision=torch.cat((vision, torch.full((2, padding, 35), 1_000_000.0)), dim=1),
+        masks=padded_masks,
+    )
+
+    torch.testing.assert_close(padded.logits, baseline.logits)
+    torch.testing.assert_close(padded.score, baseline.score)
+    torch.testing.assert_close(padded.gates[:, :positions], baseline.gates)
+    torch.testing.assert_close(padded.temporal_attention[:, :positions], baseline.temporal_attention)
+    assert torch.equal(padded.gates[:, positions:], torch.zeros_like(padded.gates[:, positions:]))
+    assert torch.equal(
+        padded.temporal_attention[:, positions:], torch.zeros_like(padded.temporal_attention[:, positions:])
+    )
+
+
+def test_masked_mean_preserves_attention_state_and_rng_without_pool_attention_gradient() -> None:
+    torch.manual_seed(179)
+    attention = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+    attention_successor = torch.rand(5)
+
+    torch.manual_seed(179)
+    masked_mean = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_pooling_variant="masked_mean",
+    )
+    masked_mean_successor = torch.rand(5)
+
+    assert masked_mean.state_dict().keys() == attention.state_dict().keys()
+    assert all(torch.equal(masked_mean.state_dict()[name], attention.state_dict()[name]) for name in attention.state_dict())
+    assert torch.equal(masked_mean_successor, attention_successor)
+
+    output = masked_mean(
+        text=torch.randn(2, 5, 768),
+        audio=torch.randn(2, 5, 74),
+        vision=torch.randn(2, 5, 35),
+        masks=availability_pooling_masks(),
+    )
+    (output.logits.square().sum() + output.score.square().sum()).backward()
+
+    assert masked_mean.pool_attention.weight.grad is None
+    assert masked_mean.pool_attention.bias.grad is None
 
 
 def test_attention_availability_pooling_rejects_late_expert_shared_fusion() -> None:
@@ -1086,6 +1208,28 @@ def test_late_expert_shared_returns_finite_bounded_predictions_and_expert_weight
     torch.testing.assert_close(output.expert_weights.sum(dim=1), torch.ones(2))
     assert torch.all(output.score <= 3)
     assert torch.all(output.score >= -3)
+
+
+def test_masked_mean_late_expert_encodes_active_rows_with_uniform_attention() -> None:
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="late_expert_shared",
+        temporal_pooling_variant="masked_mean",
+    ).eval()
+    model.pool_attention = FailingPoolAttention()
+    expert_mask = torch.tensor(
+        [[True, False, True, True, False], [False, False, False, False, False], [False, True, False, False, True]]
+    )
+
+    representation, attention = model._encode_late_expert(torch.randn(3, 5, 16), expert_mask)
+
+    expected = expert_mask.to(dtype=attention.dtype)
+    expected[[0, 2]] = expected[[0, 2]] / expert_mask[[0, 2]].sum(dim=1, keepdim=True).to(dtype=attention.dtype)
+    assert torch.equal(attention, expected)
+    assert torch.equal(representation[1], torch.zeros_like(representation[1]))
 
 
 def test_late_expert_shared_ignores_unavailable_raw_values_and_zeroes_inactive_experts() -> None:
