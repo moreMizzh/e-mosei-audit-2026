@@ -18,6 +18,7 @@ from e_mosei_audit.q2.config import (
     validate_temporal_context_training,
     validate_temporal_position_variant,
     validate_temporal_pooling_variant,
+    validate_temporal_residual_training,
 )
 
 
@@ -181,6 +182,7 @@ class MaskAwareTemporalFusion(nn.Module):
         fusion_variant: str = "gated",
         temporal_position_variant: str = "none",
         temporal_context_variant: str = "none",
+        temporal_residual_variant: str = "none",
         temporal_pooling_variant: str = "attention",
         text_adapter_variant: str = "identity",
         classification_variant: str = "flat",
@@ -192,6 +194,10 @@ class MaskAwareTemporalFusion(nn.Module):
         self.temporal_position_variant = validate_temporal_position_variant(temporal_position_variant)
         self.temporal_context_variant = validate_temporal_context_training(
             temporal_context_variant,
+            fusion_variant=self.fusion_variant,
+        )
+        self.temporal_residual_variant = validate_temporal_residual_training(
+            temporal_residual_variant,
             fusion_variant=self.fusion_variant,
         )
         self.temporal_pooling_variant = validate_temporal_pooling_variant(temporal_pooling_variant)
@@ -242,6 +248,22 @@ class MaskAwareTemporalFusion(nn.Module):
             try:
                 self.availability_embedding = nn.Linear(3, hidden_size, bias=False)
                 nn.init.zeros_(self.availability_embedding.weight)
+            finally:
+                torch.set_rng_state(rng_state)
+        if self.temporal_residual_variant == "depthwise_conv3":
+            rng_state = torch.get_rng_state()
+            try:
+                self.local_depthwise_residual = nn.Conv1d(
+                    hidden_size,
+                    hidden_size,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    dilation=1,
+                    groups=hidden_size,
+                    bias=False,
+                )
+                nn.init.zeros_(self.local_depthwise_residual.weight)
             finally:
                 torch.set_rng_state(rng_state)
         if self.text_adapter_variant == "houlsby_output_b32":
@@ -336,6 +358,9 @@ class MaskAwareTemporalFusion(nn.Module):
         if self.temporal_context_variant == "availability_embedding":
             fused = fused + self.availability_embedding(availability.to(dtype=fused.dtype))
         fused = fused.masked_fill(~temporal.unsqueeze(-1), 0.0)
+        if self.temporal_residual_variant == "depthwise_conv3":
+            local = self.local_depthwise_residual(fused.transpose(1, 2)).transpose(1, 2)
+            fused = (fused + local).masked_fill(~temporal.unsqueeze(-1), 0.0)
         if self.fusion_variant == "pairwise_hadamard_residual":
             fused = fused + _pairwise_hadamard_residual(states, availability, masks.temporal)
         if self.temporal_position_variant == "sinusoidal":

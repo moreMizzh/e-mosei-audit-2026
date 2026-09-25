@@ -691,6 +691,135 @@ def test_availability_embedding_weight_receives_finite_nonzero_gradient() -> Non
     assert torch.count_nonzero(gradient) > 0
 
 
+def test_depthwise_temporal_residual_adds_only_zero_kernel_and_preserves_gated_initialization_rng_and_output() -> None:
+    torch.manual_seed(211)
+    none = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_residual_variant="none",
+    ).eval()
+    none_successor = torch.rand(5)
+
+    torch.manual_seed(211)
+    local = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_residual_variant="depthwise_conv3",
+    ).eval()
+    local_successor = torch.rand(5)
+    masks = availability_pooling_masks()
+    text = torch.randn(2, 5, 768)
+    audio = torch.randn(2, 5, 74)
+    vision = torch.randn(2, 5, 35)
+
+    assert not hasattr(none, "local_depthwise_residual")
+    assert local.local_depthwise_residual.weight.shape == (16, 1, 3)
+    assert torch.equal(local.local_depthwise_residual.weight, torch.zeros(16, 1, 3))
+    assert set(local.state_dict()) - set(none.state_dict()) == {"local_depthwise_residual.weight"}
+    assert all(torch.equal(none.state_dict()[name], local.state_dict()[name]) for name in none.state_dict())
+    assert sum(parameter.numel() for parameter in local.parameters()) - sum(parameter.numel() for parameter in none.parameters()) == 48
+    assert torch.equal(local_successor, none_successor)
+    assert_same_public_output(
+        local(text=text, audio=audio, vision=vision, masks=masks),
+        none(text=text, audio=audio, vision=vision, masks=masks),
+    )
+
+
+def test_depthwise_temporal_residual_masks_internal_unavailability_and_appended_padding() -> None:
+    torch.manual_seed(223)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_residual_variant="depthwise_conv3",
+    ).eval()
+    with torch.no_grad():
+        model.local_depthwise_residual.weight.fill_(0.25)
+    positions, padding = 5, 2
+    masks = availability_pooling_masks()
+    text = torch.randn(2, positions, 768)
+    audio = torch.randn(2, positions, 74)
+    vision = torch.randn(2, positions, 35)
+    padded_model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_residual_variant="depthwise_conv3",
+    ).eval()
+    padded_model.load_state_dict(model.state_dict())
+    baseline_recorder = RecordingEncoder(model.temporal_encoder)
+    model.temporal_encoder = baseline_recorder
+
+    baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+    changed = model(
+        text=text.masked_fill(~masks.text.unsqueeze(-1), 1_000_000.0),
+        audio=audio.masked_fill(~masks.audio.unsqueeze(-1), 1_000_000.0),
+        vision=vision.masked_fill(~masks.vision.unsqueeze(-1), 1_000_000.0),
+        masks=masks,
+    )
+    assert_same_public_output(changed, baseline)
+
+    padded_masks = TensorMasks(
+        text=torch.cat((masks.text, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        audio=torch.cat((masks.audio, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        vision=torch.cat((masks.vision, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        temporal=torch.cat((masks.temporal, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+    )
+    padded_recorder = RecordingEncoder(padded_model.temporal_encoder)
+    padded_model.temporal_encoder = padded_recorder
+    padded = padded_model(
+        text=torch.cat((text, torch.full((2, padding, 768), 1_000_000.0)), dim=1),
+        audio=torch.cat((audio, torch.full((2, padding, 74), 1_000_000.0)), dim=1),
+        vision=torch.cat((vision, torch.full((2, padding, 35), 1_000_000.0)), dim=1),
+        masks=padded_masks,
+    )
+
+    torch.testing.assert_close(padded.logits, baseline.logits)
+    torch.testing.assert_close(padded.score, baseline.score)
+    torch.testing.assert_close(padded.gates[:, :positions], baseline.gates)
+    torch.testing.assert_close(padded.temporal_attention[:, :positions], baseline.temporal_attention)
+    assert torch.equal(padded.gates[:, positions:], torch.zeros_like(padded.gates[:, positions:]))
+    assert torch.equal(
+        padded.temporal_attention[:, positions:], torch.zeros_like(padded.temporal_attention[:, positions:])
+    )
+    invalid = ~(padded_masks.temporal & (padded_masks.text | padded_masks.audio | padded_masks.vision))
+    assert torch.equal(
+        padded_recorder.inputs[0][invalid],
+        torch.zeros_like(padded_recorder.inputs[0][invalid]),
+    )
+    assert torch.equal(padded_recorder.src_key_padding_masks[0], invalid)
+
+
+def test_depthwise_temporal_residual_weight_receives_finite_nonzero_gradient() -> None:
+    torch.manual_seed(227)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_residual_variant="depthwise_conv3",
+    )
+    output = model(
+        text=torch.randn(2, 5, 768),
+        audio=torch.randn(2, 5, 74),
+        vision=torch.randn(2, 5, 35),
+        masks=availability_pooling_masks(),
+    )
+
+    (output.logits.square().sum() + output.score.square().sum()).backward()
+
+    gradient = model.local_depthwise_residual.weight.grad
+    assert gradient is not None
+    assert torch.isfinite(gradient).all()
+    assert torch.count_nonzero(gradient) > 0
+
+
 def test_mask_aware_fusion_returns_three_logits_and_bounded_score() -> None:
     model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
 
