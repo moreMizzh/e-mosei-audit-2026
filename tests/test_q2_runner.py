@@ -1630,6 +1630,86 @@ def test_evaluate_saved_q2_valid_reconstructs_legacy_gated_identity_without_acce
     assert observed_strict == [True]
 
 
+def test_evaluate_saved_q2_valid_historical_absent_pooling_reconstructs_attention(
+    monkeypatch, tmp_path: Path
+) -> None:
+    aligned_payload = TrainValidPayloadWithInaccessibleTest(
+        {
+            "train": runner_split([0, 1, 2]),
+            "valid": runner_split([0, 1, 2]),
+            "test": {"not": "an accessible Q2 runtime input"},
+        }
+    )
+    archive = RunnerArchive({ALIGNED_50_MEMBER: aligned_payload})
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "historical-absent-pooling-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="gated",
+        classification_variant="flat",
+    )
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "fusion_variant": "gated",
+                    "text_adapter_variant": "identity",
+                    "classification_variant": "flat",
+                    "temporal_position_variant": "none",
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed_pooling_variants: list[str] = []
+    observed_strict: list[bool] = []
+    original_model_constructor = q2_runner.MaskAwareTemporalFusion
+    original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
+
+    def recording_model_constructor(*args, **kwargs):
+        observed_pooling_variants.append(kwargs["temporal_pooling_variant"])
+        return original_model_constructor(*args, **kwargs)
+
+    def recording_load_state_dict(self, *args, **kwargs):
+        observed_strict.append(kwargs["strict"])
+        return original_load_state_dict(self, *args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", recording_model_constructor)
+    monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "historical-absent-pooling-valid-report.json",
+        archive=archive,
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert report["sample_count"] == 3
+    assert archive.verify_count == 1
+    assert observed_pooling_variants == ["attention"]
+    assert observed_strict == [True]
+
+
 def test_evaluate_saved_q2_valid_strictly_reconstructs_flat_label_smoothing_checkpoint_without_accessing_test(
     monkeypatch, tmp_path: Path
 ) -> None:
