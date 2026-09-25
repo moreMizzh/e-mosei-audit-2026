@@ -31,6 +31,8 @@ from e_mosei_audit.q2.config import (
     validate_temporal_context_variant,
     validate_temporal_position_variant,
     validate_temporal_pooling_variant,
+    validate_temporal_residual_training,
+    validate_temporal_residual_variant,
     validate_text_adapter_variant,
     validate_text_encoder_variant,
 )
@@ -200,6 +202,10 @@ def run_q2(
         config.temporal_context_variant,
         fusion_variant=config.fusion_variant,
     )
+    validate_temporal_residual_training(
+        config.temporal_residual_variant,
+        fusion_variant=config.fusion_variant,
+    )
     _validate_output_target(config.output_dir)
     active_archive = archive or SevenZipArchive(config.archive, config.seven_zip)
     active_archive.verify()
@@ -223,6 +229,7 @@ def run_q2(
         fusion_variant=config.fusion_variant,
         temporal_position_variant=config.temporal_position_variant,
         temporal_context_variant=config.temporal_context_variant,
+        temporal_residual_variant=config.temporal_residual_variant,
         temporal_pooling_variant=config.temporal_pooling_variant,
         text_adapter_variant=config.text_adapter_variant,
         classification_variant=config.classification_variant,
@@ -322,6 +329,10 @@ def check_q2(
         config.temporal_context_variant,
         fusion_variant=config.fusion_variant,
     )
+    validate_temporal_residual_training(
+        config.temporal_residual_variant,
+        fusion_variant=config.fusion_variant,
+    )
     _validate_output_target(config.output_dir)
     active_archive = archive or SevenZipArchive(config.archive, config.seven_zip)
     active_archive.verify()
@@ -374,6 +385,8 @@ def evaluate_saved_q2_valid(
     fusion_variant = _manifest_fusion_variant(training)
     temporal_context_variant = _manifest_temporal_context_variant(training)
     validate_temporal_context_training(temporal_context_variant, fusion_variant=fusion_variant)
+    temporal_residual_variant = _manifest_temporal_residual_variant(training)
+    validate_temporal_residual_training(temporal_residual_variant, fusion_variant=fusion_variant)
     temporal_pooling_variant = _manifest_temporal_pooling_variant(training)
     device = _resolve_device(_manifest_string(training, "device"))
     active_archive = archive or SevenZipArchive(
@@ -401,6 +414,7 @@ def evaluate_saved_q2_valid(
         fusion_variant=fusion_variant,
         temporal_position_variant=_manifest_temporal_position_variant(training),
         temporal_context_variant=temporal_context_variant,
+        temporal_residual_variant=temporal_residual_variant,
         temporal_pooling_variant=temporal_pooling_variant,
         text_adapter_variant=_manifest_text_adapter_variant(training),
         classification_variant=classification_variant,
@@ -517,6 +531,14 @@ def _manifest_temporal_context_variant(training: Mapping[str, object]) -> str:
     if "temporal_context_variant" not in training:
         return "none"
     return validate_temporal_context_variant(training["temporal_context_variant"])
+
+
+def _manifest_temporal_residual_variant(training: Mapping[str, object]) -> str:
+    """Treat historical saved runs as having no local temporal residual."""
+
+    if "temporal_residual_variant" not in training:
+        return "none"
+    return validate_temporal_residual_variant(training["temporal_residual_variant"])
 
 
 def _manifest_temporal_pooling_variant(training: Mapping[str, object]) -> str:
@@ -1037,6 +1059,7 @@ def _write_run_outputs(
                 "classification_loss_variant": config.classification_loss_variant,
                 "temporal_position_variant": config.temporal_position_variant,
                 "temporal_context_variant": config.temporal_context_variant,
+                "temporal_residual_variant": config.temporal_residual_variant,
                 "temporal_pooling_variant": config.temporal_pooling_variant,
                 "text_encoder_variant": text_encoder_variant,
                 "device": config.device,
