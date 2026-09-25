@@ -665,6 +665,57 @@ def runner_config(tmp_path: Path, *, temporal_pooling_variant: str = "attention"
     )
 
 
+def _write_saved_temporal_context_run(
+    run_dir: Path,
+    config: Q2Config,
+    *,
+    temporal_context_variant: str | None,
+    fusion_variant: str = "gated",
+) -> None:
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant=fusion_variant,
+        temporal_context_variant=temporal_context_variant or "none",
+    )
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    training: dict[str, object] = {
+        "batch_size": 3,
+        "hidden_size": 16,
+        "heads": 4,
+        "layers": 1,
+        "dropout": 0.0,
+        "fusion_variant": fusion_variant,
+        "text_adapter_variant": "identity",
+        "classification_variant": "flat",
+        "temporal_position_variant": "none",
+        "temporal_pooling_variant": "attention",
+        "device": "cpu",
+    }
+    if temporal_context_variant is not None:
+        training["temporal_context_variant"] = temporal_context_variant
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": training,
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def runner_archive_with_inaccessible_test() -> RunnerArchive:
     aligned_payload = TrainValidPayloadWithInaccessibleTest(
         {
@@ -967,6 +1018,69 @@ def test_masked_mean_config_runs_check_and_fake_archive_without_accessing_test(t
     assert config.output_dir.is_dir()
     assert run_summary["attachment3_count"] == 30
     assert manifest["training"]["temporal_pooling_variant"] == "masked_mean"
+
+
+def test_availability_context_runs_check_and_fake_archive_without_accessing_test(monkeypatch, tmp_path: Path) -> None:
+    config = replace(runner_config(tmp_path), temporal_context_variant="availability_embedding")
+    observed_context_variants: list[str] = []
+    original_model_constructor = q2_runner.MaskAwareTemporalFusion
+
+    def recording_model_constructor(*args, **kwargs):
+        observed_context_variants.append(kwargs["temporal_context_variant"])
+        return original_model_constructor(*args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", recording_model_constructor)
+
+    check_summary = check_q2(
+        config,
+        archive=runner_archive_with_inaccessible_test(),
+        token_encoder=TinyTokenEncoder(),
+    )
+    assert not config.output_dir.exists()
+    run_summary = run_q2(
+        config,
+        archive=runner_archive_with_inaccessible_test(),
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert check_summary == {"train_count": 3, "valid_count": 3, "attachment3_count": 30}
+    assert run_summary["attachment3_count"] == 30
+    assert manifest["training"]["temporal_context_variant"] == "availability_embedding"
+    assert observed_context_variants == ["availability_embedding"]
+
+
+@pytest.mark.parametrize("entrypoint", [run_q2, check_q2], ids=["run", "check"])
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        (
+            {"temporal_context_variant": "unsupported"},
+            "temporal_context_variant must be one of: none, availability_embedding",
+        ),
+        (
+            {
+                "temporal_context_variant": "availability_embedding",
+                "fusion_variant": "late_expert_shared",
+            },
+            "availability_embedding temporal context is unsupported with late_expert_shared fusion",
+        ),
+    ],
+)
+def test_q2_entrypoints_reject_invalid_temporal_context_before_output_or_archive(
+    tmp_path: Path,
+    entrypoint,
+    updates: dict[str, object],
+    message: str,
+) -> None:
+    config = replace(runner_config(tmp_path), **updates)
+    archive = ArchiveAccessSentinel()
+
+    with pytest.raises(ValueError, match=rf"\A{message}\Z"):
+        entrypoint(config, archive=archive, token_encoder=TinyTokenEncoder())
+
+    assert object.__getattribute__(archive, "accesses") == []
+    assert not config.output_dir.exists()
 
 
 def test_run_q2_records_pooled_lmf_r4_architecture_without_test_split_access(tmp_path: Path) -> None:
@@ -2002,6 +2116,148 @@ def test_evaluate_saved_q2_valid_strictly_reconstructs_masked_mean_checkpoint(
     assert report["sample_count"] == 3
     assert observed_pooling_variants == ["masked_mean"]
     assert observed_strict == [True]
+
+
+def test_evaluate_saved_q2_valid_strictly_reconstructs_availability_embedding_checkpoint(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-availability-embedding-run"
+    _write_saved_temporal_context_run(
+        run_dir,
+        config,
+        temporal_context_variant="availability_embedding",
+    )
+    observed_context_variants: list[str] = []
+    observed_strict: list[bool] = []
+    original_model_constructor = q2_runner.MaskAwareTemporalFusion
+    original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
+
+    def recording_model_constructor(*args, **kwargs):
+        observed_context_variants.append(kwargs["temporal_context_variant"])
+        return original_model_constructor(*args, **kwargs)
+
+    def recording_load_state_dict(self, *args, **kwargs):
+        observed_strict.append(kwargs["strict"])
+        return original_load_state_dict(self, *args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", recording_model_constructor)
+    monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "availability-embedding-valid-report.json",
+        archive=RunnerArchive(
+            {
+                ALIGNED_50_MEMBER: TrainValidPayloadWithInaccessibleTest(
+                    {
+                        "train": runner_split([0, 1, 2]),
+                        "valid": runner_split([0, 1, 2]),
+                        "test": {"not": "an accessible Q2 runtime input"},
+                    }
+                )
+            }
+        ),
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert report["sample_count"] == 3
+    assert observed_context_variants == ["availability_embedding"]
+    assert observed_strict == [True]
+
+
+def test_manifest_temporal_context_variant_defaults_and_validates() -> None:
+    assert q2_runner._manifest_temporal_context_variant({}) == "none"
+    assert q2_runner._manifest_temporal_context_variant({"temporal_context_variant": "availability_embedding"}) == (
+        "availability_embedding"
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"\Atemporal_context_variant must be one of: none, availability_embedding\Z",
+    ):
+        q2_runner._manifest_temporal_context_variant({"temporal_context_variant": "unsupported"})
+
+
+@pytest.mark.parametrize(
+    ("temporal_context_variant", "fusion_variant", "message"),
+    [
+        (
+            "unsupported",
+            "gated",
+            "temporal_context_variant must be one of: none, availability_embedding",
+        ),
+        (
+            "availability_embedding",
+            "late_expert_shared",
+            "availability_embedding temporal context is unsupported with late_expert_shared fusion",
+        ),
+    ],
+)
+def test_evaluate_saved_q2_valid_rejects_invalid_temporal_context_before_archive(
+    tmp_path: Path,
+    temporal_context_variant: str,
+    fusion_variant: str,
+    message: str,
+) -> None:
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-invalid-temporal-context-run"
+    _write_saved_temporal_context_run(
+        run_dir,
+        config,
+        temporal_context_variant="none",
+        fusion_variant="gated",
+    )
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["training"]["temporal_context_variant"] = temporal_context_variant
+    manifest["training"]["fusion_variant"] = fusion_variant
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    archive = ArchiveAccessSentinel()
+
+    with pytest.raises(ValueError, match=rf"\A{message}\Z"):
+        evaluate_saved_q2_valid(
+            run_dir,
+            tmp_path / "invalid-temporal-context-valid-report.json",
+            archive=archive,
+            token_encoder=TinyTokenEncoder(),
+        )
+
+    assert object.__getattribute__(archive, "accesses") == []
+    assert not (tmp_path / "invalid-temporal-context-valid-report.json").exists()
+
+
+def test_evaluate_saved_q2_valid_defaults_historical_manifest_temporal_context_to_none(monkeypatch, tmp_path: Path) -> None:
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-historical-temporal-context-run"
+    _write_saved_temporal_context_run(run_dir, config, temporal_context_variant=None)
+    observed_context_variants: list[str] = []
+    original_model_constructor = q2_runner.MaskAwareTemporalFusion
+
+    def recording_model_constructor(*args, **kwargs):
+        observed_context_variants.append(kwargs["temporal_context_variant"])
+        return original_model_constructor(*args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", recording_model_constructor)
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "historical-temporal-context-valid-report.json",
+        archive=RunnerArchive(
+            {
+                ALIGNED_50_MEMBER: TrainValidPayloadWithInaccessibleTest(
+                    {
+                        "train": runner_split([0, 1, 2]),
+                        "valid": runner_split([0, 1, 2]),
+                        "test": {"not": "an accessible Q2 runtime input"},
+                    }
+                )
+            }
+        ),
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert report["sample_count"] == 3
+    assert observed_context_variants == ["none"]
 
 
 def test_evaluate_saved_q2_valid_strictly_reconstructs_sinusoidal_position_checkpoint(monkeypatch, tmp_path: Path) -> None:

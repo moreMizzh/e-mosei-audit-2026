@@ -27,6 +27,8 @@ from e_mosei_audit.q2.config import (
     validate_dropout_consistency_variant,
     validate_dropout_consistency_training,
     validate_fusion_variant,
+    validate_temporal_context_training,
+    validate_temporal_context_variant,
     validate_temporal_position_variant,
     validate_temporal_pooling_variant,
     validate_text_adapter_variant,
@@ -194,6 +196,10 @@ def run_q2(
         classification_variant=config.classification_variant,
         dropout_consistency_variant=config.dropout_consistency_variant,
     )
+    validate_temporal_context_training(
+        config.temporal_context_variant,
+        fusion_variant=config.fusion_variant,
+    )
     _validate_output_target(config.output_dir)
     active_archive = archive or SevenZipArchive(config.archive, config.seven_zip)
     active_archive.verify()
@@ -216,6 +222,7 @@ def run_q2(
         dropout=config.dropout,
         fusion_variant=config.fusion_variant,
         temporal_position_variant=config.temporal_position_variant,
+        temporal_context_variant=config.temporal_context_variant,
         temporal_pooling_variant=config.temporal_pooling_variant,
         text_adapter_variant=config.text_adapter_variant,
         classification_variant=config.classification_variant,
@@ -311,6 +318,10 @@ def check_q2(
         classification_variant=config.classification_variant,
         dropout_consistency_variant=config.dropout_consistency_variant,
     )
+    validate_temporal_context_training(
+        config.temporal_context_variant,
+        fusion_variant=config.fusion_variant,
+    )
     _validate_output_target(config.output_dir)
     active_archive = archive or SevenZipArchive(config.archive, config.seven_zip)
     active_archive.verify()
@@ -360,6 +371,9 @@ def evaluate_saved_q2_valid(
         classification_variant=classification_variant,
         dropout_consistency_variant=dropout_consistency_variant,
     )
+    fusion_variant = _manifest_fusion_variant(training)
+    temporal_context_variant = _manifest_temporal_context_variant(training)
+    validate_temporal_context_training(temporal_context_variant, fusion_variant=fusion_variant)
     temporal_pooling_variant = _manifest_temporal_pooling_variant(training)
     device = _resolve_device(_manifest_string(training, "device"))
     active_archive = archive or SevenZipArchive(
@@ -384,8 +398,9 @@ def evaluate_saved_q2_valid(
         heads=_manifest_positive_int(training, "heads"),
         layers=_manifest_positive_int(training, "layers"),
         dropout=_manifest_dropout(training, "dropout"),
-        fusion_variant=_manifest_fusion_variant(training),
+        fusion_variant=fusion_variant,
         temporal_position_variant=_manifest_temporal_position_variant(training),
+        temporal_context_variant=temporal_context_variant,
         temporal_pooling_variant=temporal_pooling_variant,
         text_adapter_variant=_manifest_text_adapter_variant(training),
         classification_variant=classification_variant,
@@ -494,6 +509,14 @@ def _manifest_temporal_position_variant(training: Mapping[str, object]) -> str:
     if "temporal_position_variant" not in training:
         return "none"
     return validate_temporal_position_variant(training["temporal_position_variant"])
+
+
+def _manifest_temporal_context_variant(training: Mapping[str, object]) -> str:
+    """Treat historical saved runs as having no availability context embedding."""
+
+    if "temporal_context_variant" not in training:
+        return "none"
+    return validate_temporal_context_variant(training["temporal_context_variant"])
 
 
 def _manifest_temporal_pooling_variant(training: Mapping[str, object]) -> str:
@@ -1013,6 +1036,7 @@ def _write_run_outputs(
                 "classification_variant": config.classification_variant,
                 "classification_loss_variant": config.classification_loss_variant,
                 "temporal_position_variant": config.temporal_position_variant,
+                "temporal_context_variant": config.temporal_context_variant,
                 "temporal_pooling_variant": config.temporal_pooling_variant,
                 "text_encoder_variant": text_encoder_variant,
                 "device": config.device,
