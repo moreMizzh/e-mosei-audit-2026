@@ -25,6 +25,7 @@ CLASSIFICATION_VARIANTS = ("flat", "corn")
 CLASSIFICATION_LOSS_VARIANTS = ("hard_ce", "weighted_label_smoothing_005")
 DROPOUT_CONSISTENCY_VARIANTS = ("none", "rdrop_alpha_1")
 TEMPORAL_POSITION_VARIANTS = ("none", "sinusoidal")
+TEMPORAL_CONTEXT_VARIANTS = ("none", "availability_embedding")
 TEMPORAL_POOLING_VARIANTS = ("attention", "attention_availability", "masked_mean")
 TEXT_ENCODER_VARIANTS = ("last_hidden_state", "last4_scalar_mix")
 _TRAINING_FIELDS = (
@@ -47,6 +48,7 @@ _TRAINING_FIELDS = (
     "classification_variant",
     "classification_loss_variant",
     "temporal_position_variant",
+    "temporal_context_variant",
     "temporal_pooling_variant",
     "text_encoder_variant",
     "device",
@@ -78,6 +80,7 @@ class Q2Config:
     classification_variant: str
     classification_loss_variant: str
     temporal_position_variant: str
+    temporal_context_variant: str
     temporal_pooling_variant: str
     text_encoder_variant: str
     device: str
@@ -127,6 +130,10 @@ def load_q2_config(path: Path) -> Q2Config:
         classification_variant=validate_classification_variant(values["classification_variant"]),
         classification_loss_variant=validate_classification_loss_variant(values["classification_loss_variant"]),
         temporal_position_variant=validate_temporal_position_variant(values["temporal_position_variant"]),
+        temporal_context_variant=validate_temporal_context_training(
+            values["temporal_context_variant"],
+            fusion_variant=validate_fusion_variant(values["fusion_variant"]),
+        ),
         temporal_pooling_variant=validate_temporal_pooling_variant(values["temporal_pooling_variant"]),
         text_encoder_variant=validate_text_encoder_variant(values["text_encoder_variant"]),
         device=values["device"],
@@ -211,7 +218,7 @@ def _validate_training(values: Mapping[str, object]) -> None:
         raise ValueError("class_weight_exponent is outside its valid range")
     if not isinstance(values["synthetic_missingness_enabled"], bool):
         raise ValueError("synthetic_missingness_enabled must be boolean")
-    validate_fusion_variant(values["fusion_variant"])
+    fusion_variant = validate_fusion_variant(values["fusion_variant"])
     validate_text_adapter_variant(values["text_adapter_variant"])
     classification_variant = validate_classification_variant(values["classification_variant"])
     dropout_consistency_variant = validate_dropout_consistency_training(
@@ -225,6 +232,7 @@ def _validate_training(values: Mapping[str, object]) -> None:
         dropout_consistency_variant=dropout_consistency_variant,
     )
     validate_temporal_position_variant(values["temporal_position_variant"])
+    validate_temporal_context_training(values["temporal_context_variant"], fusion_variant=fusion_variant)
     validate_temporal_pooling_variant(values["temporal_pooling_variant"])
     validate_text_encoder_variant(values["text_encoder_variant"])
     if values["hidden_size"] % values["heads"]:
@@ -321,6 +329,23 @@ def validate_temporal_position_variant(value: object) -> str:
     if not isinstance(value, str) or value not in TEMPORAL_POSITION_VARIANTS:
         raise ValueError("temporal_position_variant must be one of: none, sinusoidal")
     return value
+
+
+def validate_temporal_context_variant(value: object) -> str:
+    """Require one of the persisted Q2 temporal-context implementations."""
+
+    if not isinstance(value, str) or value not in TEMPORAL_CONTEXT_VARIANTS:
+        raise ValueError("temporal_context_variant must be one of: none, availability_embedding")
+    return value
+
+
+def validate_temporal_context_training(value: object, *, fusion_variant: str) -> str:
+    """Reject a persisted temporal context that does not reach its fused state."""
+
+    variant = validate_temporal_context_variant(value)
+    if variant == "availability_embedding" and fusion_variant == "late_expert_shared":
+        raise ValueError("availability_embedding temporal context is unsupported with late_expert_shared fusion")
+    return variant
 
 
 def validate_temporal_pooling_variant(value: object) -> str:

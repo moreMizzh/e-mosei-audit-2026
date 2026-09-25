@@ -43,6 +43,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -105,6 +106,7 @@ fusion_variant = "gated"
 text_adapter_variant = "identity"
 classification_variant = "flat"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -202,6 +204,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 device = "cpu"
 ''',
         encoding="utf-8",
@@ -249,6 +252,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 device = "cpu"
 ''',
@@ -296,6 +300,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -357,6 +362,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -404,6 +410,7 @@ text_adapter_variant = "{variant}"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -451,6 +458,7 @@ text_adapter_variant = "identity"
 classification_variant = "{variant}"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -498,6 +506,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "{variant}"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -544,6 +553,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "unsupported"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -594,6 +604,7 @@ text_adapter_variant = "identity"
 classification_variant = "corn"
 classification_loss_variant = "weighted_label_smoothing_005"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -644,6 +655,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "weighted_label_smoothing_005"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -697,6 +709,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -743,6 +756,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -791,6 +805,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -838,6 +853,7 @@ text_adapter_variant = "identity"
 classification_variant = "corn"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -886,6 +902,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "{variant}"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -933,6 +950,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "{variant}"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -980,6 +998,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "{variant}"
 device = "cpu"
@@ -1027,6 +1046,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = {value}
 device = "cpu"
@@ -1077,6 +1097,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "unsupported"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -1127,6 +1148,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "unsupported"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -1177,6 +1199,7 @@ text_adapter_variant = "identity"
 classification_variant = "unsupported"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -1224,6 +1247,7 @@ text_adapter_variant = "unsupported"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -1274,6 +1298,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -1333,6 +1358,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -1407,6 +1433,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -1455,6 +1482,7 @@ text_adapter_variant = "identity"
 classification_variant = "flat"
 classification_loss_variant = "hard_ce"
 temporal_position_variant = "none"
+temporal_context_variant = "none"
 temporal_pooling_variant = "attention"
 text_encoder_variant = "last_hidden_state"
 device = "cpu"
@@ -1473,3 +1501,91 @@ device = "cpu"
     seven_zip.chmod(0o755)
     with pytest.raises(FileExistsError, match="output directory already exists"):
         load_q2_config(config_path)
+
+
+def _write_temporal_context_config(
+    tmp_path: Path,
+    *,
+    temporal_context_variant: str | None = '"none"',
+    fusion_variant: str = "gated",
+) -> Path:
+    archive = tmp_path / "data.zip"
+    archive.write_bytes(b"zip")
+    seven_zip = tmp_path / "7za"
+    seven_zip.write_bytes(b"tool")
+    seven_zip.chmod(0o755)
+    bert_model = tmp_path / "bert-base-uncased"
+    bert_model.mkdir()
+    context_line = (
+        "" if temporal_context_variant is None else f"temporal_context_variant = {temporal_context_variant}\n"
+    )
+    config_path = tmp_path / "q2.toml"
+    config_path.write_text(
+        f'''[paths]
+archive = "data.zip"
+seven_zip = "7za"
+bert_model = "bert-base-uncased"
+output_dir = "artifacts/q2"
+
+[training]
+seed = 7
+epochs = 3
+batch_size = 2
+learning_rate = 0.001
+weight_decay = 0.01
+hidden_size = 16
+heads = 4
+layers = 1
+dropout = 0.0
+regression_loss_weight = 0.5
+polarity_consistency_loss_weight = 0.0
+dropout_consistency_variant = "none"
+class_weight_exponent = 1.0
+synthetic_missingness_enabled = true
+fusion_variant = "{fusion_variant}"
+text_adapter_variant = "identity"
+classification_variant = "flat"
+classification_loss_variant = "hard_ce"
+temporal_position_variant = "none"
+{context_line}temporal_pooling_variant = "attention"
+text_encoder_variant = "last_hidden_state"
+device = "cpu"
+''',
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def test_load_q2_config_requires_temporal_context_variant(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"\Amissing required training field: temporal_context_variant\Z"):
+        load_q2_config(_write_temporal_context_config(tmp_path, temporal_context_variant=None))
+
+
+@pytest.mark.parametrize("variant", ["none", "availability_embedding"])
+def test_load_q2_config_parses_supported_temporal_context_variant(tmp_path: Path, variant: str) -> None:
+    config = load_q2_config(_write_temporal_context_config(tmp_path, temporal_context_variant=f'"{variant}"'))
+
+    assert config.temporal_context_variant == variant
+
+
+@pytest.mark.parametrize("variant", ['"unsupported"', "0"])
+def test_load_q2_config_rejects_invalid_temporal_context_variant(tmp_path: Path, variant: str) -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"\Atemporal_context_variant must be one of: none, availability_embedding\Z",
+    ):
+        load_q2_config(_write_temporal_context_config(tmp_path, temporal_context_variant=variant))
+
+
+def test_load_q2_config_rejects_availability_context_for_late_expert_fusion(tmp_path: Path) -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"\Aavailability_embedding temporal context is unsupported with late_expert_shared fusion\Z",
+    ):
+        load_q2_config(
+            _write_temporal_context_config(
+                tmp_path,
+                temporal_context_variant='"availability_embedding"',
+                fusion_variant="late_expert_shared",
+            )
+        )
