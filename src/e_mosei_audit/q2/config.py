@@ -27,7 +27,7 @@ DROPOUT_CONSISTENCY_VARIANTS = ("none", "rdrop_alpha_1")
 TEMPORAL_POSITION_VARIANTS = ("none", "sinusoidal")
 TEMPORAL_CONTEXT_VARIANTS = ("none", "availability_embedding")
 TEMPORAL_RESIDUAL_VARIANTS = ("none", "depthwise_conv3")
-TEMPORAL_POOLING_VARIANTS = ("attention", "attention_availability", "masked_mean")
+TEMPORAL_POOLING_VARIANTS = ("attention", "attention_availability", "attention_statistics_residual", "masked_mean")
 TEXT_ENCODER_VARIANTS = ("last_hidden_state", "last4_scalar_mix")
 _TRAINING_FIELDS = (
     "seed",
@@ -377,7 +377,10 @@ def validate_temporal_pooling_variant(value: object) -> str:
     """Require one of the persisted Q2 temporal pooling implementations."""
 
     if not isinstance(value, str) or value not in TEMPORAL_POOLING_VARIANTS:
-        raise ValueError("temporal_pooling_variant must be one of: attention, attention_availability, masked_mean")
+        raise ValueError(
+            "temporal_pooling_variant must be one of: attention, attention_availability, "
+            "attention_statistics_residual, masked_mean"
+        )
     return value
 
 

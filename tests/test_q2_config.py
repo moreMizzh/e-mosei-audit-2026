@@ -930,7 +930,10 @@ device = "cpu"
     assert load_q2_config(config_path).temporal_position_variant == variant
 
 
-@pytest.mark.parametrize("variant", ["attention", "attention_availability", "masked_mean"])
+@pytest.mark.parametrize(
+    "variant",
+    ["attention", "attention_availability", "attention_statistics_residual", "masked_mean"],
+)
 def test_load_q2_config_parses_supported_temporal_pooling_variant(tmp_path: Path, variant: str) -> None:
     archive = tmp_path / "data.zip"
     archive.write_bytes(b"zip")
@@ -1180,7 +1183,10 @@ device = "cpu"
 
     with pytest.raises(
         ValueError,
-        match=r"\Atemporal_pooling_variant must be one of: attention, attention_availability, masked_mean\Z",
+        match=(
+            r"\Atemporal_pooling_variant must be one of: attention, attention_availability, "
+            r"attention_statistics_residual, masked_mean\Z"
+        ),
     ):
         load_q2_config(config_path)
 
