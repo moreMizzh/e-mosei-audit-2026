@@ -26,6 +26,7 @@ CLASSIFICATION_LOSS_VARIANTS = ("hard_ce", "weighted_label_smoothing_005")
 DROPOUT_CONSISTENCY_VARIANTS = ("none", "rdrop_alpha_1")
 TEMPORAL_POSITION_VARIANTS = ("none", "sinusoidal")
 TEMPORAL_CONTEXT_VARIANTS = ("none", "availability_embedding")
+TEMPORAL_RESIDUAL_VARIANTS = ("none", "depthwise_conv3")
 TEMPORAL_POOLING_VARIANTS = ("attention", "attention_availability", "masked_mean")
 TEXT_ENCODER_VARIANTS = ("last_hidden_state", "last4_scalar_mix")
 _TRAINING_FIELDS = (
@@ -49,6 +50,7 @@ _TRAINING_FIELDS = (
     "classification_loss_variant",
     "temporal_position_variant",
     "temporal_context_variant",
+    "temporal_residual_variant",
     "temporal_pooling_variant",
     "text_encoder_variant",
     "device",
@@ -81,6 +83,7 @@ class Q2Config:
     classification_loss_variant: str
     temporal_position_variant: str
     temporal_context_variant: str
+    temporal_residual_variant: str
     temporal_pooling_variant: str
     text_encoder_variant: str
     device: str
@@ -132,6 +135,10 @@ def load_q2_config(path: Path) -> Q2Config:
         temporal_position_variant=validate_temporal_position_variant(values["temporal_position_variant"]),
         temporal_context_variant=validate_temporal_context_training(
             values["temporal_context_variant"],
+            fusion_variant=validate_fusion_variant(values["fusion_variant"]),
+        ),
+        temporal_residual_variant=validate_temporal_residual_training(
+            values["temporal_residual_variant"],
             fusion_variant=validate_fusion_variant(values["fusion_variant"]),
         ),
         temporal_pooling_variant=validate_temporal_pooling_variant(values["temporal_pooling_variant"]),
@@ -233,6 +240,7 @@ def _validate_training(values: Mapping[str, object]) -> None:
     )
     validate_temporal_position_variant(values["temporal_position_variant"])
     validate_temporal_context_training(values["temporal_context_variant"], fusion_variant=fusion_variant)
+    validate_temporal_residual_training(values["temporal_residual_variant"], fusion_variant=fusion_variant)
     validate_temporal_pooling_variant(values["temporal_pooling_variant"])
     validate_text_encoder_variant(values["text_encoder_variant"])
     if values["hidden_size"] % values["heads"]:
@@ -345,6 +353,23 @@ def validate_temporal_context_training(value: object, *, fusion_variant: str) ->
     variant = validate_temporal_context_variant(value)
     if variant == "availability_embedding" and fusion_variant == "late_expert_shared":
         raise ValueError("availability_embedding temporal context is unsupported with late_expert_shared fusion")
+    return variant
+
+
+def validate_temporal_residual_variant(value: object) -> str:
+    """Require one of the persisted Q2 local temporal residuals."""
+
+    if not isinstance(value, str) or value not in TEMPORAL_RESIDUAL_VARIANTS:
+        raise ValueError("temporal_residual_variant must be one of: none, depthwise_conv3")
+    return value
+
+
+def validate_temporal_residual_training(value: object, *, fusion_variant: str) -> str:
+    """Reject a persisted temporal residual that does not reach its fused state."""
+
+    variant = validate_temporal_residual_variant(value)
+    if variant == "depthwise_conv3" and fusion_variant == "late_expert_shared":
+        raise ValueError("depthwise_conv3 temporal residual is unsupported with late_expert_shared fusion")
     return variant
 
 
