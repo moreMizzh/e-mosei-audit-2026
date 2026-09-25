@@ -532,6 +532,165 @@ def test_attention_availability_bias_weights_receive_finite_nonzero_gradients() 
     assert torch.all(gradient != 0)
 
 
+@pytest.mark.parametrize("variant", ["none", "availability_embedding"])
+def test_temporal_context_variant_is_stored_after_validation(variant: str) -> None:
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_context_variant=variant,
+    )
+
+    assert model.temporal_context_variant == variant
+
+
+def test_temporal_context_variant_rejects_unknown_value() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"\Atemporal_context_variant must be one of: none, availability_embedding\Z",
+    ):
+        MaskAwareTemporalFusion(
+            hidden_size=16,
+            heads=4,
+            layers=1,
+            dropout=0.0,
+            temporal_context_variant="unsupported",
+        )
+
+
+def test_availability_embedding_rejects_late_expert_shared_fusion() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"\Aavailability_embedding temporal context is unsupported with late_expert_shared fusion\Z",
+    ):
+        MaskAwareTemporalFusion(
+            hidden_size=16,
+            heads=4,
+            layers=1,
+            dropout=0.0,
+            fusion_variant="late_expert_shared",
+            temporal_context_variant="availability_embedding",
+        )
+
+
+def test_availability_embedding_adds_only_zero_weight_and_preserves_rng_and_none_forward() -> None:
+    torch.manual_seed(181)
+    none = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+    none_successor = torch.rand(5)
+
+    torch.manual_seed(181)
+    availability = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_context_variant="availability_embedding",
+    ).eval()
+    availability_successor = torch.rand(5)
+    masks = availability_pooling_masks()
+    text = torch.randn(2, 5, 768)
+    audio = torch.randn(2, 5, 74)
+    vision = torch.randn(2, 5, 35)
+
+    assert availability.availability_embedding.weight.shape == (16, 3)
+    assert torch.equal(availability.availability_embedding.weight, torch.zeros(16, 3))
+    assert set(availability.state_dict()) - set(none.state_dict()) == {"availability_embedding.weight"}
+    assert all(torch.equal(none.state_dict()[name], availability.state_dict()[name]) for name in none.state_dict())
+    assert sum(parameter.numel() for parameter in availability.parameters()) - sum(parameter.numel() for parameter in none.parameters()) == 48
+    assert torch.equal(availability_successor, none_successor)
+    assert_same_public_output(
+        availability(text=text, audio=audio, vision=vision, masks=masks),
+        none(text=text, audio=audio, vision=vision, masks=masks),
+    )
+
+
+def test_availability_embedding_ignores_unavailable_values_and_appended_padding() -> None:
+    torch.manual_seed(191)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_context_variant="availability_embedding",
+    ).eval()
+    with torch.no_grad():
+        model.availability_embedding.weight.fill_(0.25)
+    positions, padding = 4, 2
+    text = torch.randn(2, positions, 768)
+    audio = torch.randn(2, positions, 74)
+    vision = torch.randn(2, positions, 35)
+    masks = TensorMasks(
+        text=torch.tensor([[True, False, True, True], [False, True, True, True]]),
+        audio=torch.tensor([[False, True, True, False], [True, False, True, True]]),
+        vision=torch.tensor([[True, True, False, True], [True, True, False, False]]),
+        temporal=torch.ones(2, positions, dtype=torch.bool),
+    )
+
+    baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+    changed = model(
+        text=text.masked_fill(~masks.text.unsqueeze(-1), 1_000_000.0),
+        audio=audio.masked_fill(~masks.audio.unsqueeze(-1), 1_000_000.0),
+        vision=vision.masked_fill(~masks.vision.unsqueeze(-1), 1_000_000.0),
+        masks=masks,
+    )
+    assert_same_public_output(changed, baseline)
+
+    padded_masks = TensorMasks(
+        text=torch.cat((masks.text, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        audio=torch.cat((masks.audio, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        vision=torch.cat((masks.vision, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        temporal=torch.cat((masks.temporal, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+    )
+    padded_model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_context_variant="availability_embedding",
+    ).eval()
+    padded_model.load_state_dict(model.state_dict())
+    padded = padded_model(
+        text=torch.cat((text, torch.full((2, padding, 768), 1_000_000.0)), dim=1),
+        audio=torch.cat((audio, torch.full((2, padding, 74), 1_000_000.0)), dim=1),
+        vision=torch.cat((vision, torch.full((2, padding, 35), 1_000_000.0)), dim=1),
+        masks=padded_masks,
+    )
+
+    torch.testing.assert_close(padded.logits, baseline.logits)
+    torch.testing.assert_close(padded.score, baseline.score)
+    torch.testing.assert_close(padded.gates[:, :positions], baseline.gates)
+    torch.testing.assert_close(padded.temporal_attention[:, :positions], baseline.temporal_attention)
+    assert torch.equal(padded.gates[:, positions:], torch.zeros_like(padded.gates[:, positions:]))
+    assert torch.equal(
+        padded.temporal_attention[:, positions:], torch.zeros_like(padded.temporal_attention[:, positions:])
+    )
+
+
+def test_availability_embedding_weight_receives_finite_nonzero_gradient() -> None:
+    torch.manual_seed(193)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_context_variant="availability_embedding",
+    )
+    output = model(
+        text=torch.randn(2, 5, 768),
+        audio=torch.randn(2, 5, 74),
+        vision=torch.randn(2, 5, 35),
+        masks=availability_pooling_masks(),
+    )
+
+    (output.logits.square().sum() + output.score.square().sum()).backward()
+
+    gradient = model.availability_embedding.weight.grad
+    assert gradient is not None
+    assert torch.isfinite(gradient).all()
+    assert torch.count_nonzero(gradient) > 0
+
+
 def test_mask_aware_fusion_returns_three_logits_and_bounded_score() -> None:
     model = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0)
 

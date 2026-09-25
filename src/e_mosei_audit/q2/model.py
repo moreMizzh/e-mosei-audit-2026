@@ -15,6 +15,7 @@ from e_mosei_audit.q2.config import (
     validate_fusion_variant,
     validate_text_adapter_variant,
     validate_text_encoder_variant,
+    validate_temporal_context_training,
     validate_temporal_position_variant,
     validate_temporal_pooling_variant,
 )
@@ -179,6 +180,7 @@ class MaskAwareTemporalFusion(nn.Module):
         dropout: float = 0.1,
         fusion_variant: str = "gated",
         temporal_position_variant: str = "none",
+        temporal_context_variant: str = "none",
         temporal_pooling_variant: str = "attention",
         text_adapter_variant: str = "identity",
         classification_variant: str = "flat",
@@ -188,6 +190,10 @@ class MaskAwareTemporalFusion(nn.Module):
             raise ValueError("hidden_size must be positive, layers/heads positive, and hidden_size divisible by heads")
         self.fusion_variant = validate_fusion_variant(fusion_variant)
         self.temporal_position_variant = validate_temporal_position_variant(temporal_position_variant)
+        self.temporal_context_variant = validate_temporal_context_training(
+            temporal_context_variant,
+            fusion_variant=self.fusion_variant,
+        )
         self.temporal_pooling_variant = validate_temporal_pooling_variant(temporal_pooling_variant)
         self.text_adapter_variant = validate_text_adapter_variant(text_adapter_variant)
         self.classification_variant = validate_classification_variant(classification_variant)
@@ -229,6 +235,13 @@ class MaskAwareTemporalFusion(nn.Module):
             try:
                 self.pool_availability_bias = nn.Linear(3, 1, bias=False)
                 nn.init.zeros_(self.pool_availability_bias.weight)
+            finally:
+                torch.set_rng_state(rng_state)
+        if self.temporal_context_variant == "availability_embedding":
+            rng_state = torch.get_rng_state()
+            try:
+                self.availability_embedding = nn.Linear(3, hidden_size, bias=False)
+                nn.init.zeros_(self.availability_embedding.weight)
             finally:
                 torch.set_rng_state(rng_state)
         if self.text_adapter_variant == "houlsby_output_b32":
@@ -320,6 +333,8 @@ class MaskAwareTemporalFusion(nn.Module):
         gates = torch.softmax(safe_gate_logits, dim=-1)
         gates = torch.where(any_available.unsqueeze(-1), gates, torch.zeros_like(gates))
         fused = sum(gates[..., index : index + 1] * state for index, state in enumerate(states))
+        if self.temporal_context_variant == "availability_embedding":
+            fused = fused + self.availability_embedding(availability.to(dtype=fused.dtype))
         fused = fused.masked_fill(~temporal.unsqueeze(-1), 0.0)
         if self.fusion_variant == "pairwise_hadamard_residual":
             fused = fused + _pairwise_hadamard_residual(states, availability, masks.temporal)
