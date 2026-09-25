@@ -35,6 +35,7 @@
 | Gated A + 固定加权标签平滑 `epsilon=0.05` | `q2-valid-label-smoothing-005` | 0.633242 | 0.608920 | 0.696294 | 0.606287 | 1 | 淘汰：clean F1、Negative F1、MAE 与场景均值回退 |
 | Gated A + masked-mean 时间池化 | `q2-valid-masked-mean` | 0.640110 | 0.608224 | 0.717029 | 0.586507 | 1 | 淘汰：clean F1、Neutral F1、MAE 与场景均值回退 |
 | Gated A + 槽位可用性嵌入 | `q2-valid-availability-embedding` | 0.635989 | 0.614009 | 0.620810 | 0.615683 | 1 | 淘汰：clean F1 与场景均值回退 |
+| Gated A + 深度可分局部时序残差 k=3 | `q2-valid-depthwise-local-residual` | 0.637363 | 0.614006 | 0.620894 | 0.616713 | 1 | 淘汰：clean F1 与场景均值回退 |
 
 ### Test
 
@@ -67,6 +68,7 @@
 | Gated A + 固定加权标签平滑 `epsilon=0.05` | `q2-valid-label-smoothing-005` | - | - | - | - | 未评估 |
 | Gated A + masked-mean 时间池化 | `q2-valid-masked-mean` | - | - | - | - | 未评估 |
 | Gated A + 槽位可用性嵌入 | `q2-valid-availability-embedding` | - | - | - | - | 未评估 |
+| Gated A + 深度可分局部时序残差 k=3 | `q2-valid-depthwise-local-residual` | - | - | - | - | 未评估 |
 
 `Gated v4` 的 test 行来自模型冻结后的单次后验评估：checkpoint 先按附件 2 `valid` 的 macro-F1、再按 MAE 选定，之后仅对 727 条 `test` 样本推理，没有重训、调参或再次选模。其余候选均未评估；在当前探索期不得为了补全此表而运行 test，更不能将 valid 数值复制为 test 数值。
 
