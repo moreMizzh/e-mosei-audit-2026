@@ -208,7 +208,10 @@ def test_attention_availability_adds_only_zero_bias_and_preserves_initialization
     assert torch.equal(availability_successor, attention_successor)
 
 
-@pytest.mark.parametrize("variant", ["attention", "attention_availability", "masked_mean"])
+@pytest.mark.parametrize(
+    "variant",
+    ["attention", "attention_availability", "attention_statistics_residual", "masked_mean"],
+)
 def test_temporal_pooling_variant_is_stored_after_validation(variant: str) -> None:
     model = MaskAwareTemporalFusion(
         hidden_size=16,
@@ -224,7 +227,10 @@ def test_temporal_pooling_variant_is_stored_after_validation(variant: str) -> No
 def test_temporal_pooling_variant_rejects_unknown_value() -> None:
     with pytest.raises(
         ValueError,
-        match=r"\Atemporal_pooling_variant must be one of: attention, attention_availability, masked_mean\Z",
+        match=(
+            r"\Atemporal_pooling_variant must be one of: attention, attention_availability, "
+            r"attention_statistics_residual, masked_mean\Z"
+        ),
     ):
         MaskAwareTemporalFusion(
             hidden_size=16,
@@ -233,6 +239,162 @@ def test_temporal_pooling_variant_rejects_unknown_value() -> None:
             dropout=0.0,
             temporal_pooling_variant="unsupported",
         )
+
+
+def test_attention_statistics_residual_adds_only_zero_scale_and_preserves_initialization_rng_and_output() -> None:
+    torch.manual_seed(229)
+    attention = MaskAwareTemporalFusion(hidden_size=16, heads=4, layers=1, dropout=0.0).eval()
+    attention_successor = torch.rand(5)
+
+    torch.manual_seed(229)
+    statistics = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_pooling_variant="attention_statistics_residual",
+    ).eval()
+    statistics_successor = torch.rand(5)
+    masks = availability_pooling_masks()
+    text = torch.randn(2, 5, 768)
+    audio = torch.randn(2, 5, 74)
+    vision = torch.randn(2, 5, 35)
+
+    assert not hasattr(attention, "pool_statistics_scale")
+    assert statistics.pool_statistics_scale.shape == (16,)
+    assert torch.equal(statistics.pool_statistics_scale, torch.zeros(16))
+    assert set(statistics.state_dict()) - set(attention.state_dict()) == {"pool_statistics_scale"}
+    assert all(torch.equal(attention.state_dict()[name], statistics.state_dict()[name]) for name in attention.state_dict())
+    assert sum(parameter.numel() for parameter in statistics.parameters()) - sum(
+        parameter.numel() for parameter in attention.parameters()
+    ) == 16
+    assert torch.equal(statistics_successor, attention_successor)
+    assert_same_public_output(
+        statistics(text=text, audio=audio, vision=vision, masks=masks),
+        attention(text=text, audio=audio, vision=vision, masks=masks),
+    )
+
+
+def test_attention_statistics_residual_isolates_unavailable_values_internal_slots_and_padding() -> None:
+    torch.manual_seed(233)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_pooling_variant="attention_statistics_residual",
+    ).eval()
+    with torch.no_grad():
+        model.pool_statistics_scale.fill_(0.25)
+    masks = availability_pooling_masks()
+    text = torch.randn(2, 5, 768)
+    audio = torch.randn(2, 5, 74)
+    vision = torch.randn(2, 5, 35)
+    padding = 2
+    padded_masks = TensorMasks(
+        text=torch.cat((masks.text, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        audio=torch.cat((masks.audio, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        vision=torch.cat((masks.vision, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+        temporal=torch.cat((masks.temporal, torch.zeros(2, padding, dtype=torch.bool)), dim=1),
+    )
+    padded_model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_pooling_variant="attention_statistics_residual",
+    ).eval()
+    padded_model.load_state_dict(model.state_dict())
+    recorder = RecordingEncoder(model.temporal_encoder)
+    padded_recorder = RecordingEncoder(padded_model.temporal_encoder)
+    model.temporal_encoder = recorder
+    padded_model.temporal_encoder = padded_recorder
+
+    baseline = model(text=text, audio=audio, vision=vision, masks=masks)
+    changed = model(
+        text=text.masked_fill(~masks.text.unsqueeze(-1), 1_000_000.0),
+        audio=audio.masked_fill(~masks.audio.unsqueeze(-1), 1_000_000.0),
+        vision=vision.masked_fill(~masks.vision.unsqueeze(-1), 1_000_000.0),
+        masks=masks,
+    )
+    invalid = masks.temporal & ~(masks.text | masks.audio | masks.vision)
+    assert torch.equal(baseline.temporal_attention[invalid], torch.zeros_like(baseline.temporal_attention[invalid]))
+    assert torch.equal(recorder.inputs[0][invalid], torch.zeros_like(recorder.inputs[0][invalid]))
+    assert_same_public_output(changed, baseline)
+
+    padded = padded_model(
+        text=torch.cat((text, torch.full((2, padding, 768), 1_000_000.0)), dim=1),
+        audio=torch.cat((audio, torch.full((2, padding, 74), 1_000_000.0)), dim=1),
+        vision=torch.cat((vision, torch.full((2, padding, 35), 1_000_000.0)), dim=1),
+        masks=padded_masks,
+    )
+
+    torch.testing.assert_close(padded.logits, baseline.logits)
+    torch.testing.assert_close(padded.score, baseline.score)
+    torch.testing.assert_close(padded.gates[:, :5], baseline.gates)
+    torch.testing.assert_close(padded.temporal_attention[:, :5], baseline.temporal_attention)
+    padded_invalid = ~(padded_masks.temporal & (padded_masks.text | padded_masks.audio | padded_masks.vision))
+    assert torch.equal(padded.temporal_attention[padded_invalid], torch.zeros_like(padded.temporal_attention[padded_invalid]))
+    assert torch.equal(padded_recorder.inputs[0][padded_invalid], torch.zeros_like(padded_recorder.inputs[0][padded_invalid]))
+
+
+def test_attention_statistics_scale_receives_finite_nonzero_gradient() -> None:
+    torch.manual_seed(239)
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_pooling_variant="attention_statistics_residual",
+    )
+    output = model(
+        text=torch.randn(2, 5, 768),
+        audio=torch.randn(2, 5, 74),
+        vision=torch.randn(2, 5, 35),
+        masks=availability_pooling_masks(),
+    )
+
+    (output.logits.square().sum() + output.score.square().sum()).backward()
+
+    gradient = model.pool_statistics_scale.grad
+    assert gradient is not None
+    assert torch.isfinite(gradient).all()
+    assert torch.count_nonzero(gradient) > 0
+
+
+def test_attention_statistics_zero_scale_is_exactly_attention_for_late_expert_shared() -> None:
+    torch.manual_seed(241)
+    attention = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="late_expert_shared",
+    ).eval()
+    torch.manual_seed(241)
+    statistics = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        fusion_variant="late_expert_shared",
+        temporal_pooling_variant="attention_statistics_residual",
+    ).eval()
+    masks = availability_pooling_masks()
+    text = torch.randn(2, 5, 768)
+    audio = torch.randn(2, 5, 74)
+    vision = torch.randn(2, 5, 35)
+
+    actual = statistics(text=text, audio=audio, vision=vision, masks=masks)
+    expected = attention(text=text, audio=audio, vision=vision, masks=masks)
+
+    assert torch.equal(actual.logits, expected.logits)
+    assert torch.equal(actual.score, expected.score)
+    assert torch.equal(actual.gates, expected.gates)
+    assert torch.equal(actual.temporal_attention, expected.temporal_attention)
+    assert actual.expert_weights is not None
+    assert expected.expert_weights is not None
+    assert torch.equal(actual.expert_weights, expected.expert_weights)
 
 
 def test_masked_mean_pooling_uses_uniform_valid_attention_without_learned_pool() -> None:

@@ -233,6 +233,12 @@ class MaskAwareTemporalFusion(nn.Module):
         )
         self.temporal_encoder = nn.TransformerEncoder(layer, num_layers=layers, enable_nested_tensor=False)
         self.pool_attention = nn.Linear(hidden_size, 1)
+        if self.temporal_pooling_variant == "attention_statistics_residual":
+            rng_state = torch.get_rng_state()
+            try:
+                self.pool_statistics_scale = nn.Parameter(torch.zeros(hidden_size))
+            finally:
+                torch.set_rng_state(rng_state)
         classifier_size = 2 if self.classification_variant == "corn" else 3
         self.classifier = nn.Sequential(nn.LayerNorm(hidden_size + 3), nn.Linear(hidden_size + 3, classifier_size))
         self.regressor = nn.Sequential(nn.LayerNorm(hidden_size + 3), nn.Linear(hidden_size + 3, 1))
@@ -386,6 +392,11 @@ class MaskAwareTemporalFusion(nn.Module):
             attention_logits = attention_logits.masked_fill(~temporal, float("-inf"))
             temporal_attention = torch.softmax(attention_logits, dim=1)
         pooled = torch.sum(temporal_attention.unsqueeze(-1) * encoded, dim=1)
+        pooled = self._apply_attention_statistics_residual(
+            pooled=pooled,
+            encoded=encoded,
+            attention=temporal_attention,
+        )
         if self.fusion_variant == "pooled_lmf_r4":
             residual = _pooled_lmf_residual(states, availability, masks.temporal, self.pooled_lmf_factors)
             complete_modalities = torch.stack(
@@ -430,6 +441,22 @@ class MaskAwareTemporalFusion(nn.Module):
         )
         logits = probabilities.clamp_min(torch.finfo(probabilities.dtype).tiny).log()
         return logits, classification
+
+    def _apply_attention_statistics_residual(
+        self,
+        *,
+        pooled: torch.Tensor,
+        encoded: torch.Tensor,
+        attention: torch.Tensor,
+    ) -> torch.Tensor:
+        """Add the zero-initialized attention-weighted temporal deviation when enabled."""
+
+        if self.temporal_pooling_variant != "attention_statistics_residual":
+            return pooled
+        centered = encoded - pooled.unsqueeze(1)
+        variance = torch.sum(attention.unsqueeze(-1) * centered.square(), dim=1)
+        statistics = torch.sqrt(variance + torch.finfo(encoded.dtype).eps)
+        return pooled + self.pool_statistics_scale * statistics
 
     def _forward_late_expert_shared(
         self,
@@ -491,6 +518,11 @@ class MaskAwareTemporalFusion(nn.Module):
             attention_logits = self.pool_attention(encoded).squeeze(-1).masked_fill(~active_mask, float("-inf"))
             active_attention = torch.softmax(attention_logits, dim=1)
         pooled = torch.sum(active_attention.unsqueeze(-1) * encoded, dim=1)
+        pooled = self._apply_attention_statistics_residual(
+            pooled=pooled,
+            encoded=encoded,
+            attention=active_attention,
+        )
         return representation.index_copy(0, indexes, pooled), attention.index_copy(0, indexes, active_attention)
 
     def _cross_attention_context(

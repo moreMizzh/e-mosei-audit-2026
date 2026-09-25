@@ -1050,6 +1050,36 @@ def test_run_q2_records_attention_availability_pooling_without_test_split_access
     assert observed_pooling_variants == ["attention_availability"]
 
 
+def test_attention_statistics_config_runs_check_and_fake_archive_without_accessing_test(monkeypatch, tmp_path: Path) -> None:
+    config = replace(
+        runner_config(tmp_path),
+        output_dir=tmp_path / "q2-attention-statistics-output",
+        temporal_pooling_variant="attention_statistics_residual",
+    )
+    observed_pooling_variants: list[str] = []
+    original_model_constructor = q2_runner.MaskAwareTemporalFusion
+
+    def recording_model_constructor(*args, **kwargs):
+        observed_pooling_variants.append(kwargs["temporal_pooling_variant"])
+        return original_model_constructor(*args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", recording_model_constructor)
+    check_archive = runner_archive_with_inaccessible_test()
+    check_summary = check_q2(config, archive=check_archive, token_encoder=TinyTokenEncoder())
+    assert check_summary == {"train_count": 3, "valid_count": 3, "attachment3_count": 30}
+    assert check_archive.verify_count == 1
+    assert not config.output_dir.exists()
+
+    run_archive = runner_archive_with_inaccessible_test()
+    run_summary = run_q2(config, archive=run_archive, token_encoder=TinyTokenEncoder())
+
+    manifest = json.loads((config.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert run_summary["attachment3_count"] == 30
+    assert manifest["training"]["temporal_pooling_variant"] == "attention_statistics_residual"
+    assert run_archive.verify_count == 1
+    assert observed_pooling_variants == ["attention_statistics_residual"]
+
+
 def test_masked_mean_config_runs_check_and_fake_archive_without_accessing_test(tmp_path: Path) -> None:
     config = runner_config(tmp_path, temporal_pooling_variant="masked_mean")
 
@@ -2149,6 +2179,89 @@ def test_evaluate_saved_q2_valid_strictly_reconstructs_attention_availability_ch
     assert report["sample_count"] == 3
     assert archive.verify_count == 1
     assert observed_pooling_variants == ["attention_availability"]
+    assert observed_strict == [True]
+
+
+def test_evaluate_saved_q2_valid_strictly_reconstructs_attention_statistics_checkpoint(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = runner_config(tmp_path)
+    run_dir = tmp_path / "saved-attention-statistics-run"
+    run_dir.mkdir()
+    model = MaskAwareTemporalFusion(
+        hidden_size=16,
+        heads=4,
+        layers=1,
+        dropout=0.0,
+        temporal_pooling_variant="attention_statistics_residual",
+    )
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "archive": str(config.archive),
+                "seven_zip": str(config.seven_zip),
+                "bert_model": str(config.bert_model),
+                "training": {
+                    "batch_size": 3,
+                    "hidden_size": 16,
+                    "heads": 4,
+                    "layers": 1,
+                    "dropout": 0.0,
+                    "fusion_variant": "gated",
+                    "text_adapter_variant": "identity",
+                    "classification_variant": "flat",
+                    "temporal_position_variant": "none",
+                    "temporal_pooling_variant": "attention_statistics_residual",
+                    "device": "cpu",
+                },
+                "normalizer": FeatureNormalizer(
+                    audio_mean=np.zeros(74, dtype=np.float32),
+                    audio_std=np.ones(74, dtype=np.float32),
+                    vision_mean=np.zeros(35, dtype=np.float32),
+                    vision_std=np.ones(35, dtype=np.float32),
+                ).as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    archive = RunnerArchive(
+        {
+            ALIGNED_50_MEMBER: TrainValidPayloadWithInaccessibleTest(
+                {
+                    "train": runner_split([0, 1, 2]),
+                    "valid": runner_split([0, 1, 2]),
+                    "test": {"not": "an accessible Q2 runtime input"},
+                }
+            )
+        }
+    )
+    observed_pooling_variants: list[str] = []
+    observed_strict: list[bool] = []
+    original_model_constructor = q2_runner.MaskAwareTemporalFusion
+    original_load_state_dict = MaskAwareTemporalFusion.load_state_dict
+
+    def recording_model_constructor(*args, **kwargs):
+        observed_pooling_variants.append(kwargs["temporal_pooling_variant"])
+        return original_model_constructor(*args, **kwargs)
+
+    def recording_load_state_dict(self, *args, **kwargs):
+        observed_strict.append(kwargs["strict"])
+        return original_load_state_dict(self, *args, **kwargs)
+
+    monkeypatch.setattr(q2_runner, "MaskAwareTemporalFusion", recording_model_constructor)
+    monkeypatch.setattr(MaskAwareTemporalFusion, "load_state_dict", recording_load_state_dict)
+
+    report = evaluate_saved_q2_valid(
+        run_dir,
+        tmp_path / "attention-statistics-valid-report.json",
+        archive=archive,
+        token_encoder=TinyTokenEncoder(),
+    )
+
+    assert report["sample_count"] == 3
+    assert archive.verify_count == 1
+    assert observed_pooling_variants == ["attention_statistics_residual"]
     assert observed_strict == [True]
 
 
@@ -3338,7 +3451,10 @@ def test_evaluate_saved_q2_valid_rejects_unsupported_manifest_temporal_pooling_v
 
     with pytest.raises(
         ValueError,
-        match=r"\Atemporal_pooling_variant must be one of: attention, attention_availability, masked_mean\Z",
+        match=(
+            r"\Atemporal_pooling_variant must be one of: attention, attention_availability, "
+            r"attention_statistics_residual, masked_mean\Z"
+        ),
     ):
         evaluate_saved_q2_valid(
             run_dir,
